@@ -252,13 +252,17 @@ do_subtraction_addition_operation:
 	rcall		operate_on_result_function
 	clr			flag_number_exist					; clear flag_number_exist to indicate that there are no current number
 													; being inputted
+	cpi			r24, EQUAL_SIGN
+	brne		overwrite_previous_operation		; since we know that the operator is inputted right after a number, we just overwrtie the previous
+													; operation
+	rjmp		go_display_final_result
 operate_on_result_finish:
 	cpi			r24, EQUAL_SIGN
-	breq		go_display_final_result				; if equal sign is inputted, goto go_display_final_result
+	breq		go_display_final_result			; if equal sign is inputted, goto go_display_final_result
 	clr			temp3
 	inc			temp3								; temp3 = 1
 	cp			flag_number_exist, temp3
-	breq		overwrite_previous_operation		; if flag_number_exists == 1, we just overwrite the previous operators
+	breq		overwrite_previous_operation		; if flag_number_exists == 1, we just overwrite the previous operator
 	rcall		update_previous_operator_accordingly			; else, we need to consider how the - or + interracts i.e. --1 = 1 or 1+---1 = 0
 	rjmp		continue_scanning
 overwrite_previous_operation:
