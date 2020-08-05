@@ -27,7 +27,7 @@
 
 .equ			waste_n = $FFFF									; constant for switch_delay
 
-.equ			two_hundred_ms_num_interrupts = 195						; constant indicating how many time timer0 ovf 
+.equ			four_hundred_ms_num_interrupts = 977						; constant indicating how many time timer0 ovf 
 													; should occur before 200ms has passed
 
 .def			zero = r2
@@ -82,7 +82,7 @@
 	ldi		yh, high(current_lcd_pointer_pos)
 	ld		macro_r1, y
 	cpi		macro_r1, MAXCHAR_DISPLAY									
-	brlo		if_no_shift_lcd_left						; if the current lcd pointer points out of
+	brlt		if_no_shift_lcd_left						; if the current lcd pointer points out of
 	shift_lcd_left									; the screen, shift lcd screen to the left
 if_no_shift_lcd_left:
 	inc		macro_r1
@@ -138,6 +138,11 @@ if_no_shift_lcd_left:
 ; macro to shift the lcd display to the left
 .macro		shift_lcd_left
 	do_set_lcd_D_bits 0b00011000
+.endmacro
+
+; macro to shift the lcd display to the right
+.macro		shift_lcd_right
+	do_set_lcd_D_bits 0b00011100
 .endmacro
 
 ; macro	to clear the display of the screen
@@ -255,7 +260,7 @@ keypad_initialization:
 											; KEYPAD_NOT_PRESSED to indicate that there are no key pressed yet
 
 	;ser			temp1
-	;sts			PORTF, temp1						;  enable R0-R3 pull up resistor. Open all C0-C3 switch
+	;out			PORTF, temp1						;  enable R0-R3 pull up resistor. Open all C0-C3 switch
 
 	rcall			timer0_initialization					; turn on timer0 with pre-scaler of 64
 
@@ -283,9 +288,9 @@ row_loop:
 	cli										; clear global interrupt bit
 	rcall			display_pressed_character				; display the pressed character onto LCD
 
-	lds			temp1, TIFR0
+	in			temp1, TIFR0
 	cbr			temp1, 0x01
-	sts			TIFR0, temp1						; clear the timer0 ovf interrupt flag (not having this is okay, since it only affects
+	out			TIFR0, temp1						; clear the timer0 ovf interrupt flag (not having this is okay, since it only affects
 											; 1 counter increment in num_timer0_ovf)
 
 	sei										; NOTE: it is important to make sure display_pressed_character won't be interrupted
@@ -305,7 +310,11 @@ no_switch_pressed:
 	inc			col							; col++
 	ldi			temp3, 4						; temp3 = 4
 	cp			col, temp3
-	breq			main							; if col == 4, goto main
+	breq			relative_branch_resolve_main				; if col == 4, goto main
+	rjmp			relative_branch_resolve_main_not_needed
+relative_branch_resolve_main:
+	rjmp			main
+relative_branch_resolve_main_not_needed:
 	rjmp			col_loop						; else, goto col_loop
 
 
@@ -358,7 +367,8 @@ relative_branch_not_needed2:
 	do_display_a_character	temp2
 	 
 	sts			last_typed_character, temp2				; last_typed_character = temp2
-	clear_two_bytes		num_timer0_ovf
+	sts			num_timer0_ovf, zero
+	sts			num_timer0_ovf + 1, zero
 	rjmp			display_pressed_character_end
 
 
@@ -389,9 +399,11 @@ search_for_new_character_to_display:
 	sts			prev_row, row						; prev_row = row
 	sts			prev_col, col						; prev_col = col
 
-	clear_two_bytes		num_timer0_ovf
+	sts			num_timer0_ovf, zero
+	sts			num_timer0_ovf + 1, zero
 
 display_pressed_character_end:
+
 	pop			temp2
 	pop			temp1
 	ret
@@ -414,14 +426,13 @@ Timer0OVF:
 	add			temp1, temp3				
 	adc			temp2, zero						; temp2:temp1 =  num_timer0_ovf + 1
 	
-	ldi			temp3, low(two_hundred_ms_num_interrupts)
-	ldi			temp4, high(two_hundred_ms_num_interrupts)		; temp4:temp3 = two_hundred_ms_num_interrupts
+	ldi			temp3, low(four_hundred_ms_num_interrupts)
+	ldi			temp4, high(four_hundred_ms_num_interrupts)		; temp4:temp3 = four_hundred_ms_num_interrupts
 
 	cp			temp1, temp3
 	cpc			temp2, temp4
-	brne			Timer0OVF_end						; if temp2:temp1 != two_hundred_ms_num_interrupts, goto Timer0OVF_end
-											; else 200ms has passed, reset prev_col, prev_row, last_typed_character 
-	
+	brlt			Timer0OVF_end						; if temp2:temp1 < four_hundred_ms_num_interrupts, goto Timer0OVF_end
+											; else 400ms has passed, reset prev_col, prev_row, last_typed_character 
 	ldi			temp1, KEYPAD_NOT_PRESSED
 	sts			prev_col, temp1
 	sts			prev_row, temp1
@@ -616,8 +627,10 @@ switch_delay:
 ; c = 65535 * 29 + 16 cycles
 ; total time wasted = c/f = 120ms
 	push			r25
+	push			r24
 	push			temp1				; 2 cycles
 	push			temp2				; 2 cycles
+	push			r5
 
 	clr			temp1				; 1 cycle
 	clr			temp2				; 1 cycle
@@ -630,11 +643,11 @@ waste_loop_start:
 	cpc			temp2, r25			; waste_n cycle + 1
 	breq			waste_loop_exit			; waste_n cycle + 2
 
-	clr			r2					
-	inc			r2				; r2 = 1
-	add			temp1, r2			; waste_n cycle
-	clr			r2
-	adc			temp2, r2			; temp2:temp1 += 1 ; waste_n cycle
+	clr			r5					
+	inc			r5				; r5 = 1
+	add			temp1, r5			; waste_n cycle
+	clr			r5
+	adc			temp2, r5			; temp2:temp1 += 1 ; waste_n cycle
 
 	nop
 	nop
@@ -659,7 +672,9 @@ waste_loop_start:
 
 	rjmp			waste_loop_start		; 2  waste_n cycle
 waste_loop_exit:
+	pop			r5
 	pop			temp2				; 2 cycles
 	pop			temp1				; 2 cycles
+	pop			r24
 	pop			r25
 	ret							; 4 cycle ; total of 9n + 16 	
