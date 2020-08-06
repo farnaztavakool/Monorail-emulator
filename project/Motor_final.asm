@@ -74,7 +74,6 @@
 
 ////////////////////////////MACRO START////////////////////////////////////
 
-; macro to set x register points to @0
 .macro		set_x
 	ldi		xh, high(@0)
 	ldi		xl, low(@0)
@@ -95,30 +94,79 @@
 ; macro to set the DB7-DB0 in the lcd
 .macro		do_set_lcd_D_bits
 	ldi		macro_r1, @0
-	rcall	set_lcd_D_bits
-	rcall	lcd_wait
+	rcall		set_lcd_D_bits
+	rcall		lcd_wait
 .endmacro
 
 ; macro to set display an ascii character into lcd screen
 ; It also checks if the current cursor pointing somewhere 
 ; out of display, shift the screen to the left
 .macro		do_display_a_character
-	push	yl
-	push	yh
+	push		yl
+	push		yh
 	ldi		yl, low(current_lcd_pointer_pos)
 	ldi		yh, high(current_lcd_pointer_pos)
 	ld		macro_r1, y
 	cpi		macro_r1, MAXCHAR_DISPLAY									
-	brlo	if_no_shift_lcd_left									; if the current lcd pointer points out of
-	shift_lcd_left													; the screen, shift lcd screen to the left
+	brlt		if_no_shift_lcd_left						; if the current lcd pointer points out of
+	shift_lcd_left									; the screen, shift lcd screen to the left
 if_no_shift_lcd_left:
 	inc		macro_r1
 	st		y, macro_r1
 	mov		macro_r1, @0
-	rcall	display_a_character
-	rcall	lcd_wait
+	rcall		display_a_character
+	rcall		lcd_wait
 	pop		yh
 	pop		yl
+.endmacro
+
+; macro to get the current address of the pointer in the lcd and store it onto @0
+.macro do_get_lcd_pointer_address
+	clr		macro_r1
+	out		DDRF, macro_r1							; set all port F as input to read the address counter
+	out		PORTF, macro_r1							; dismiss the pull-up resistor
+	lcd_ctrl_set	LCD_RW								; set LCD to read mode
+	nop								
+	lcd_ctrl_set	LCD_E								; set enable bit in lcd
+	nop
+	nop
+	nop
+	in		macro_r1, PINF							; read the address counter from port F
+	lcd_ctrl_clr	LCD_E								; disable enable bit in lcd
+	nop	
+	nop
+	nop
+	lcd_ctrl_clr	LCD_RW								; set the R/W register in the lcd to 0 again
+	ser		macro_r2
+	out		DDRF, macro_r2							; makes port F output again
+
+	mov		@0, macro_r1							; @0 = LCD DD-RAM addresss counter (with addition of busy flag)
+
+	rcall		lcd_wait							; wait for lcd to not be busy, then return
+.endmacro
+
+; macro to store @0 into the DD-RAM address counter of the LCD 
+.macro do_store_lcd_pointer_address
+	sbr		@0, 0x80 							; ensure that the BF is set
+	out		PORTF, @0							; by defaulte LCD_RW, LCD_RS = 0, so we can immediately write @0 into the D0-7 register
+	lcd_ctrl_set	LCD_E
+	nop
+	nop
+	nop
+	lcd_ctrl_clr	LCD_E
+	nop
+	nop
+	nop
+
+	rcall		lcd_wait							; wait for lcd to not be busy, then return
+.endmacro
+
+; macro to decrements the lcd DD-RAM address counter by one. Note: it requires one extra register @0 and it changes the value
+.macro decrement_lcd_pointer_address
+	
+	do_get_lcd_pointer_address	@0						; @0 contain the current pointer address in the LCD
+	dec				@0						; LCD pointer adddress--
+	do_store_lcd_pointer_address	@0						; update the DD-RAM address counter in lcd
 .endmacro
 
 ; macro to shift the lcd display to the left
@@ -126,9 +174,14 @@ if_no_shift_lcd_left:
 	do_set_lcd_D_bits 0b00011000
 .endmacro
 
+; macro to shift the lcd display to the right
+.macro		shift_lcd_right
+	do_set_lcd_D_bits 0b00011100
+.endmacro
+
 ; macro	to clear the display of the screen
 .macro		clear_lcd_display
-	sts		current_lcd_pointer_pos, zero							; set the current_lcd_pointer_pos = 0
+	sts		current_lcd_pointer_pos, zero				; set the current_lcd_pointer_pos = 0
 	do_set_lcd_D_bits	0b00000001	
 .endmacro
 
@@ -142,39 +195,88 @@ if_no_shift_lcd_left:
 	cbi		PORTA, @0
 .endmacro
 
-; macro to divide @0 by ten and stores the result in @0
-; It keeps subtracting 10 from @0, and everytime it subtracts,
-; it increment macro_r2 by one
-.macro		div_by_ten
-	ldi		macro_r1, 10						
-	clr		macro_r2						; macro_r2 will store the result of @0/10
-dbt_loop_start:
-	cp		@0, macro_r1
-	brlo	dbt_loop_finishes
-	sub		@0, macro_r1					; @0 -= 10
-	inc		macro_r2						; macro_r2++
-	rjmp	dbt_loop_start				
-dbt_loop_finishes:
-	mov		@0, macro_r2
+; macro that checks whether row == 0 && col == 0. If yes, @0 = 1 else @0 = 0
+; Note: this macro assumes @0 to be r16-r31
+.macro		check_row_col_zero
+	ldi		@0, 1								; @0 = 1 (initially assumes row = 0 & col = 0)
+check_row_zero:
+	cp		row, zero
+	breq		check_col_zero							; if row == 0, goto check_col_zero
+	ldi		@0, 0								; else @0 = 0, and return from macro
+	rjmp		check_row_col_zero_end
+check_col_zero:
+	cp		col, zero							 
+	breq		check_row_col_zero_end						; if col == 0, return from macro
+	ldi		@0, 0								; else @0 = 0, and return from macro
+check_row_col_zero_end:
+.endmacro
+; macro to find the character corresponding to the key enterred in the keypad and the return value stored in @0
+; Note: if (row, col) = (0, 0), this macro returns 'Y'
+; Note: this function assumes @1 to be register between r16-r31.
+; e.g.	1. if (row, col) = (0, 1), this macro returns 'A' in @0
+;	2. if (row, col) = (2, 1), this macro returns 'P' in @0
+.macro		find_character_according_row_col
+	cp			row, zero
+	brne			if_not_row_col_zero
+	cp			col, zero
+	brne			if_not_row_col_zero
+	ldi			@0, 'Y'
+	rjmp			find_character_according_row_col_end
+if_not_row_col_zero:
+	mov			@0, row							; @0 = row
+	ldi			@1, 9							; @1 = 9
+	mul			@0, @1							; r1:r0 = 9 * row					
+	mov			@0, r0							; @0 = 9 * row
+
+	add			@0, col
+	add			@0, col
+	add			@0, col							; @0 = 9 * row + 3 * col
+
+
+	ldi			@1, 'A'
+	subi			@1, 3							; @1 = 'A' - 3
+
+	add			@0, @1							; @0 = ('A' - 3) +  (9 * row + 3 * col)
+find_character_according_row_col_end:
 .endmacro
 
-; macro to convert a SINGLE digit character in @0 to ascii 
+; macro that start timer0 if input_reading_stage == STATION_NAME_READING, else stops the timer 0
+.macro set_timer0_according_to_input_stage
+	lds		macro_r1, input_reading_stage
+	cpi		macro_r1, STATION_NAME_READING
+	brne		stop_timer0
+	rcall		timer0_initialization
+	rjmp		set_timer0_according_to_input_stage_end
+stop_timer0:
+	rcall		timer0_stop
+set_timer0_according_to_input_stage_end:
+.endmacro
+
+; macro to convert a SINGLE digit character in @0 to ascii
+; and store the result into @0
 .macro		convert_digit_to_ascii
 	ldi		macro_r1, '0'
 	add		@0, macro_r1
 .endmacro
 
-; macro to modulus @0 by ten and stores the result in @0
-; It keeps subtracting 10 from @0 until @0 is lower than 10
-.macro		modulo_by_ten
-	ldi		macro_r1, 10						
-mbt_loop_start:
-	cp		@0, macro_r1
-	brlo	mbt_loop_finishes
-	sub		@0, macro_r1						; @0 -= 10
-	rjmp	mbt_loop_start				
-mbt_loop_finishes:
+; macro that do @1 % @0, and store the value onto @1. Note: @0 is expected to be a constant
+.macro		modulus_one_byte_by
+	ldi			macro_r1, @0
+modulus_one_byte_by_loop_start:
+	cp			@1, macro_r1
+	brlt			modulus_one_byte_by_loop_end
+	sub			@1, macro_r1						; @1 -= @0
+	rjmp			modulus_one_byte_by_loop_start
+modulus_one_byte_by_loop_end:
 .endmacro
+
+; macro that clear the 2 bytes located in @0. Note: @0 should be a constant/label
+.macro		clear_two_bytes
+	sts			@0, zero
+	sts			@0 + 1, zero		
+.endmacro
+
+
 ////////////////////////////MACROS END////////////////////////////////////
 
 .dseg
@@ -837,25 +939,4 @@ waste_loop_exit:
 	ret								; 4 cycle ; total of 9n + 16 							; 4 cycle ; total of 9n + 16 
 
 
-/**stop_at_station:
-
-	clr macro_r1
-	ld macro_r2, y
-	
-
-loop:
-
-	cp macro_r1, macro_r2
-	breq exit
-	inc macro_r1
-	ldi temp1, 10
-loop1:
-	cpi temp1, 10
-	breq loop
-	inc temp1
-	rjmp switch_delay
-	rjmp loop1
-
-exit:
-	ret
-	**/			
+			
