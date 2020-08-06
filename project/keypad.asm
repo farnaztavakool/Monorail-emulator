@@ -19,8 +19,9 @@
 .equ			KEYPAD_NOT_PRESSED = 10								; constant that describes the keypad hasn't been pressed yet
 .equ			ASTERISK_PRESSED = 11 
 .equ			ENTER_PRESSED = 12								; constant indicating ENTER key has been pressed
-.equ			OTHER_CHARACTER_PRESSED	 = 0							; constant returned by display_pressed's function to indicates character other than
+.equ			OTHER_CHARACTER_PRESSED = 13							; constant returned by display_pressed's function to indicates character other than
 													; ENTER has been pressed
+.equ			UNKNOWN_CHARACTER_PRESSED = 14							; constant to indicates an unknow character has been pressed
 
 .equ			STATION_NAME_READING = 0x1
 .equ			TRAVEL_TIME_READING = 0x2
@@ -29,7 +30,9 @@
 
 .equ			STATION_NAME_READING_BIT = 0
 .equ			TRAVEL_TIME_READING_BIT = 1		
-.equ			DWELL_TIME_READING_BIT = 3								; these constants correspond to the bit position of the above constants
+.equ			DWELL_TIME_READING_BIT = 3							; these constants correspond to the bit position of the above constants
+
+.equ			STATION_NAME_SIZE = 21								; constant for size of each station name (including null terminator)
 
 .equ			delay1ms = 1776									; constant for wait_1ms
 
@@ -259,6 +262,7 @@ modulus_one_byte_by_loop_end:
 	sts			@0 + 1, zero		
 .endmacro
 
+///////////////////////////////////////////////////////////////////////
 
 .dseg
 .org			0x200
@@ -273,13 +277,13 @@ num_timer0_ovf:				.byte	2					; a variable to store how many time timer0 has ov
 
 input_reading_stage:			.byte	1					; a variable to keep track in which stage of input reading are the program currently in
 
-cur_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
-
 curr_input_time:			.byte	1					; a variable to store the time being input from the keypad
 
 station_name_array:			.byte	21 * 20					; a 2d array that can store 20 string each of size 20 (excluding null terminator)
 travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
 dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
+curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
+curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
 
 .cseg	
 		
@@ -334,6 +338,9 @@ keypad_initialization:
 
 	ldi			temp1, STATION_NAME_READING
 	sts			input_reading_stage, temp1				; input_reading_stage = STATION_NAME_READING
+
+	sts			curr_num_parameters, zero				; curr_num_parameters = 0
+	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
 
 	rcall			timer0_initialization					; turn on timer0 with pre-scaler of 64
 
@@ -398,12 +405,25 @@ relative_branch_asterisk_not_needed:
 	lds			temp1, input_reading_stage
 	cpi			temp1, STATION_NAME_READING
 	breq			if_station_name_input_stage				; if input_reading_stage == STATION_NAME_READING , goto if_station_name_input_stage
-											; (which means the reads the next character being input for the current station name)
+											; (which means reads the next character being input for the current station name)
 	; If we arrive at this point, result_val_l will contain the number 0-9 which we need to store onto curr_input_time
 	mov			temp1, return_val_l					; temp1 = return value of display_pressed_digit_time (between 0-9)
 	rcall			update_curr_input_time					; update the curr_input_time according to the current return_val_l value
-
+	rjmp			jump_back_to_main_station_name
 if_station_name_input_stage:
+	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq			jump_back_to_main_station_name				; if return_val_l == UNKNOWN_PRESSED_CHARACTER, goto jump_back_to_main_station_name
+
+	; TODO: check if name has exceeded 20 characters here
+
+	mov			temp1, return_val_l					; return_val_l = last_typed_character
+	rcall			store_curr_character_station_name			; otherwise, it is a valid character, store it onto the current station name array
+
+	lds			temp1, curr_station_name_num_characters
+	inc			temp1
+	sts			curr_station_name_num_characters, temp1			; curr_station_name_num_characters++
+	
+jump_back_to_main_station_name:
 	rjmp			main_station_name					; continue scanning new pressed key
 
 continue_scanning_row:
@@ -426,10 +446,27 @@ relative_branch_resolve_main_station_name_not_needed:
 main_station_name_end:
 	clear_lcd_display								; clear the display to read the next input
 	
-	; TODO: Store curr_input_time into dwell/travel array if input_reading_stage is equals DWELL_TIME_READING or TRAVEL_TIME_READING
-
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	breq			insert_null_terminator_station_name			; if input_reading_stage == NAME_STATION_READING, goto change_input_stage
+	rcall			store_curr_input_time					; otherwise, store curr_input_time to either travel/dwell array
+	rjmp			change_input_stage
+insert_null_terminator_station_name:
+	ldi			temp1, '\0'
+	rcall			store_curr_character_station_name			; insert '\0' to the index right after the last character in the current statio name array
+	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
+change_input_stage:
 	rcall			change_input_reading_stage				; call change_input_reading_stage to change input_reading_stage variable accordingly
 
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	brne			check_if_curr_input_time_need_reset			; if the new input_reading_stage != STATION_NAME_READING, goto check_if_curr_input_time_need_reset
+
+	lds			temp1, curr_num_parameters				; otherwise, curr_num_parameters++
+	inc			temp1
+	sts			curr_num_parameters, temp1
+
+check_if_curr_input_time_need_reset:
 	lds			temp1, input_reading_stage				
 	cpi			temp1, STATION_NAME_READING				
 	breq			update_timer0_state					; if the new input_reading_stage == STATION_NAME_READING, goto update_input_stage
@@ -439,10 +476,11 @@ update_timer0_state:
 	set_timer0_according_to_input_stage						; macro that stops timer0 if input reading stage != STATION_NAME_READING, else it initialize it
 	sei										; NOTE: this macro shouldn't be interrupted by timer0 (since it is changing the state of it)
 	rjmp			main_station_name
-input_reading_finish:
+input_reading_finish:									; input reading finish at this point
 	clear_lcd_display
-	rjmp			input_reading_finish					; Input reading is finished at this stage
-
+	rcall			display_all_arrays
+loop_infinitely:
+	rjmp			loop_infinitely						
 
 ; A function that display the pressed number in the keypad to the screen. This function return ENTER_PRESSED if the 'A' key is pressed on the keypad,
 ; otherwise, it returns either the number 0-9.
@@ -487,17 +525,17 @@ display_pressed_digit_time_end:
 	ret
 
 ; A function that display the pressed character in the keypad to the screen. This function return ENTER_PRESSED if the 'A' key is pressed on the keypad, ASTERISK_PRESSED
-; if the '*' key is pressed, otherwise, it returns OTHER_CHARACTER_PRESSED
+; if the '*' key is pressed, 'A' to 'Z' or ' ' dependinging on which character currently being pressed, or otherwise UNKNOWN_CHARACTER_PRESSED
 ; Note: This function need to synchronize with timer0
 ; Registers: temp1, temp2
 ; Arguments: prev_row, prev_col, last_typed_character, row, col
-; Returns: return_val_l (either contain OTHER_CHARACTER_PRESSED, ASTERISK_PRESSED or ENTER_PRESSED)
+; Returns: return_val_l (either contain 'A'-'Z' or ' ', ASTERISK_PRESSED, ENTER_PRESSED or UNKNOWN_CHARACTER_PRESSED)
 display_pressed_character_station_name:
 	push			temp1
 	push			temp2
 	push			temp3
 
-	ldi			return_val_l, OTHER_CHARACTER_PRESSED			; initially, just assume OHTER_CHARACTER_PRESSED
+	ldi			return_val_l, UNKNOWN_CHARACTER_PRESSED			; initially, just assume UNKNOWN_CHARACTER_PRESSED
 	
 	lds			temp1, prev_row
 	cp			temp1, row
@@ -554,7 +592,13 @@ done_modulus_character:
 	sts			last_typed_character, temp2				; last_typed_character = temp2
 	clear_two_bytes		num_timer0_ovf
 
-	ldi			return_val_l, OTHER_CHARACTER_PRESSED			; returl_l = OTHER_CHARACTER_PRESSED
+	mov			return_val_l, temp2					; return_val_l = last_typed_character
+
+	lds			temp1, curr_station_name_num_characters
+	dec			temp1
+	sts			curr_station_name_num_characters, temp1			; curr_station_name_num_characters-- (since we are only overwriting a character, not introducing
+											; new character)
+
 	rjmp			display_pressed_character_station_name_end
 
 
@@ -579,7 +623,7 @@ search_for_new_character_to_display:
 
 	clear_two_bytes		num_timer0_ovf
 
-	ldi			return_val_l, OTHER_CHARACTER_PRESSED			; return_val_; = OTHER_CHARACTER_PRESSED
+	mov			return_val_l, temp1					; return_val_l = last_typed_character
 	rjmp			display_pressed_character_station_name_end
 
 check_third_column1:
@@ -612,7 +656,7 @@ space_key_pressed:
 	sts			prev_col, temp1						; last_typed_character, prev_row, prev_col = KEYPAD_NOT_PRESSED
 	
 	clear_two_bytes		num_timer0_ovf						; reset the timer0 count
-		
+	ldi			return_val_l, ' '					; return_val_l = ' '
 check_third_row1_end:
 	rjmp			display_pressed_character_station_name_end
 display_pressed_character_station_name_end:
@@ -622,6 +666,83 @@ display_pressed_character_station_name_end:
 	pop			temp1
 	ret
 
+; A function that stores the current character being input into the current station name array according to curr_num_parameters and curr_station_name_num_characters.
+; temp1 will store the character needed to be stored.
+; Registers: temp2, temp3, xl, xh
+; Arguments: curr_station_name_num_characters, station_name_array, temp1
+; Return: -
+store_curr_character_station_name:
+	push			temp1
+	push			temp2
+	push			temp3
+	push			temp4
+	push			xl
+	push			xh
+
+	lds			temp2, curr_num_parameters				; temp2 = curr_num_parameters
+	ldi			temp3, STATION_NAME_SIZE				; temp3 = STATION_NAME_SIZE
+	mul			temp2, temp3						; r1:r0 = STATION_NAME_SIZE * curr_num_parameters
+
+	mov			temp2, r0	
+	mov			temp3, r1						; temp3:temp2 = STATION_NAME_SIZE * curr_num_parameters
+
+	set_x			station_name_array
+	add			xl, temp2
+	adc			xh, temp3						; x = &station_name_array[curr_num_parameters]
+
+	lds			temp2, curr_station_name_num_characters
+	add			xl, temp2
+	adc			xh, zero						; x = &station_name_array[curr_num_parameters][curr_station_num_characters]
+
+	st			x, temp1						; station_name_array[curr_num_parameters][curr_station_num_characters] = temp1
+
+
+	pop			xh
+	pop			xl
+	pop			temp4
+	pop			temp3
+	pop			temp2
+	pop			temp1
+	ret
+
+; A function that stores curr_input_time into either travel_time_array/dwell_time_array according to curr_num_parameters
+; Registers: temp1, xl, xh
+; Arguments: curr_input_time, input_reading_stage
+; Return: -
+store_curr_input_time:
+	push			temp1
+	push			temp2
+	push			xl
+	push			xh
+
+	lds			temp1, curr_input_time
+	lds			temp2, input_reading_stage
+
+	cpi			temp2, TRAVEL_TIME_READING
+	brne			store_curr_check_if_dwell_time_reading			; if input_reading_stage != TRAVEL_TIME_READING, goto check_if_dwell_time_reading
+	set_x			travel_time_array					; otherwise, store curr_input_time into travel_time_array corresponding to index
+	lds			temp2, curr_num_parameters				; in curr_num_parameters
+	add			xl, temp2
+	adc			xh, zero
+	st			x, temp1
+	rjmp			store_curr_input_time_end
+store_curr_check_if_dwell_time_reading:
+	cpi			temp2, DWELL_TIME_READING
+	brne			store_curr_input_time_end				; if input_reading_stage != DWELL_TIME_READING, goto store_curr_input_time_end
+	set_x			dwell_time_array					; otherwise, store curr_input_time into dwell_time_array corresponding to index
+	lds			temp2, curr_num_parameters				; in curr_num_parameters
+	add			xl, temp2
+	adc			xh, zero
+	st			x, temp1
+	rjmp			store_curr_input_time_end
+
+store_curr_input_time_end:
+	pop			xh
+	pop			xl
+	pop			temp2
+	pop			temp1
+	ret
+	
 ; A function to update the value of curr_input_time as a new character is being input
 ; Essentially what it does is curr_input_time = curr_input_time * 10 + temp1, where temp1 is a number between 0...9
 ; Registers: temp2, temp3
@@ -757,6 +878,24 @@ check_if_dwell_time_reading:
 	sts			input_reading_stage, temp1				; input_readign_stage = STATION_NAME_READING
 change_input_reading_stage_end:
 	pop			temp1
+	ret
+
+; A function that display a string into the lcd. The argument y will need to points to
+; a valid starting addresss of a string
+; IMPORTANT NOTE: it changes the value of y register
+; Registers: temp1
+; Arguments: y
+; Returns: -
+display_string_onto_lcd:
+	push					temp1
+display_string_onto_lcd_loop_start:
+	ld					temp1, y+						; temp1 = string[i]
+	cpi					temp1, 0
+	breq					display_string_onto_lcd_loop_end			; if temp1 == '\0', goto display_string_loop_end
+	do_display_a_character temp1
+	rjmp					display_string_onto_lcd_loop_start
+display_string_onto_lcd_loop_end:
+	pop					temp1
 	ret
 
 ; A function that set temp as 0xFF and decrements it until 0
@@ -943,3 +1082,111 @@ waste_loop_exit:
 	pop			r24
 	pop			r25
 	ret							; 4 cycle ; total of 9n + 16 	
+
+
+////////////////////////////////////////////////////////// DEBUGGING FUNCTION //////////////////////////////////////////////////////////
+; A function for purpse of debugging that displays all the inside of station_name_array, travel_time_array and dwell_time_array
+display_all_arrays:
+	push			temp1
+	push			temp2
+	push			temp3
+	push			temp4
+	push			yl
+	push			yh
+
+	ldi			temp1, 0						; temp1 = i = 0
+	lds			temp2, curr_num_parameters				; temp2 = curr_num_parameters
+display_all_arrays_loop_start:
+	cp			temp1, temp2
+	brge			display_all_array_relative_branch_resolve		; if i >= curr_num_parameters
+	rjmp			display_all_array_relative_branch_resolve_not_needed
+display_all_array_relative_branch_resolve:
+	rjmp			display_all_arrays_loop_start_end
+display_all_array_relative_branch_resolve_not_needed:
+	ldi			temp3, STATION_NAME_SIZE				; temp3 = STATION_NAME_SIZE
+	mul			temp1, temp3						; r1:r0 = STATION_NAME_SIZE * curr_num_parameters
+
+	mov			temp3, r0	
+	mov			temp4, r1						; temp4:temp3 = STATION_NAME_SIZE * curr_num_parameters
+
+	set_y			station_name_array
+	add			yl, temp3
+	adc			yh, temp4						; y = &station_name_array[curr_num_parameters]
+
+	rcall			display_string_onto_lcd
+
+	rcall			delay_three_half_seconds
+	clear_lcd_display
+
+	set_y			travel_time_array
+	add			yl, temp1
+	adc			yh, zero
+
+	ld			temp3, y
+	ldi			temp4, 'A'
+	add			temp3, temp4
+	do_display_a_character	temp3
+
+	rcall			delay_three_half_seconds
+	clear_lcd_display
+
+	set_y			dwell_time_array
+	add			yl, temp1
+	adc			yh, zero
+
+	ld			temp3, y
+	ldi			temp4, 'A'
+	add			temp3, temp4
+	do_display_a_character	temp3
+
+	rcall			delay_three_half_seconds
+
+	clear_lcd_display
+
+	inc			temp1
+	rjmp			display_all_arrays_loop_start
+display_all_arrays_loop_start_end:
+	pop			yh
+	pop			yl
+	pop			temp4
+	pop			temp3
+	pop			temp2
+	pop			temp1
+	ret
+	
+; A function that delays for approx 3.5s 
+delay_three_half_seconds:
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay
+	rcall			switch_delay							; delay approx 3.2s
+	ret
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
