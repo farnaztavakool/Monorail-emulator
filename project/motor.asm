@@ -1,6 +1,9 @@
 
+
 ; the code is built on feddrick's code for task c
 
+; set the prescaler for 1024 doesnt work correctly
+; when press the buttons it will restart
 
 
 
@@ -27,8 +30,7 @@
 .def			temp2 = r19
 .def			temp3 = r20
 .def			temp4 = r21
-.def			location = r22
-
+.def			timer = r23
 
 
 
@@ -147,19 +149,25 @@ second_left: .byte 1
 time:		.byte  1
 stop:		.byte  1
 start:		.byte  1
+timer1:		.byte	1
+number_of_stations:	.byte 1
 
 
 
 num_interrupts_timer0:		.byte	1					; a variable to keep track how many time timer0 overflow happens
 num_motor_hole_counter:		.byte	1					; a variable to keep track how many time we have come accross a hole on the DC motor
 current_lcd_pointer_pos:	.byte	1					; a variable to keep track the current position of the lcd cursor
-station_array:				.byte	2					; a variable to store the current measured rps
-;location:					.byte	1
+station_array:				.byte	3					; a variable to store the current measured rps
+stop_time_array:			.byte	2
+stop_station:				.byte	1
 
 .cseg
 
 .org					0x000
 jmp						RESET
+
+	
+
 
 .org					INT0addr						; INT0addr is the address of EXT_INT0 (External Interrupt 0)
 jmp						EXT_INT0						; interrupt vector for External Interrupt 0
@@ -167,15 +175,17 @@ jmp						EXT_INT0						; interrupt vector for External Interrupt 0
 .org					INT1addr						; INT0addr is the address of EXT_INT1 (External Interrupt 1)
 jmp						EXT_INT1						; interrupt vector for External Interrupt 1
 
-.org					INT2addr						; INT2addr is the address of EXT_INT2 (External Interrupt 2)
-jmp						EXT_INT2						; interrupt vector for External Interrupt 2	
+
+
+.org					OVF2addr
+jmp						Time2OVF	
 
 
 
-.org					OVF1addr						; OVF0addr is the address of Timer0 Overflow Interrupt Vector
-jmp						Timer1OVF			
 
 RESET:
+
+
 	ldi				temp1, high(RAMEND)
 	out				SPH, temp1
 	ldi				temp1, low(RAMEND)
@@ -184,20 +194,15 @@ RESET:
 
 
 	
-
-	set_x			station_array	
-	ldi				temp1, 3
-	st				x+, temp1
-	ldi				temp1, 4
-	st				x, temp1
-
+	; setting the beginning of path
 	
 
-	clr temp1
-	sts			start, temp1
 lcd_initialization:
-	set_x			current_lcd_pointer_pos
-	st				x, zero								; current_lcd_pointer_pos = 0
+
+	ldi			zl,	low(current_lcd_pointer_pos)
+	ldi			zh, high(current_lcd_pointer_pos)
+
+	st				z, zero								; current_lcd_pointer_pos = 0
 	ser				temp1
 	out				DDRF, temp1							; set port F as all output pin
 	out				DDRA, temp1							; set port A as all output pin
@@ -226,35 +231,28 @@ external_interrupt_initialization:
 	ldi				temp1, (1<<ISC21|1<<ISC11|1<<ISC01) ; 
 	sts				EICRA, temp1						; falling EDGE generate interrupt 2, 1 and 0
 	in				temp1, EIMSK
-	ori				temp1, (1<<INT2|1<<INT1|1<<INT0)	
+	ori				temp1, (0<<INT2|1<<INT1|1<<INT0)	
 	out				EIMSK, temp1						; enable INT2, 1 and 0
 
-timer1_initialization:
+
+;enable this timer when we are in a station 
+timer2_initilization:
 
 	clr				temp1
-	sts				TCCR1A, temp1
-	ldi				temp1, 0b00000010					; change the precalser value
+	sts				TCCR2A, temp1
+	ldi				temp1, (1<<CS22)|(1<<CS20)					; change the precalser value
 														; pre-scaler value is 1024 (the cycle for timer0 runs 1024 slower)
-	sts				TCCR1B, temp1						; set pre-scaler value as 1024 for timer 0
+	sts				TCCR2B, temp1						; set pre-scaler value as 1024 for timer 0
 
-	ldi				temp1, (1 << TOIE1)
-	sts				TIMSK1, temp1
-	
-
-		
-	clr				temp1					; enable Timer0 overflow interrupt
-	sts				time, temp1
-	set_x			station_array
-	ld				temp1, x
-	sts				second_left, temp1
-	
+	ldi				temp1, (0 << TOIE2)					;we enable it when we stop at a station 
+	sts				TIMSK2, temp1
+	 
 pwm_timer3B_initialization:
 	ldi				temp1, OC3B_PIN						; temp1 = 0b00010000
 	out				DDRE, temp1							; set PE4 (OC3B) pint as output
 
 	clr				temp1
 	sts				OCR3BH, temp1
-	;ldi				temp1, 0xee
 	sts				OCR3BL, temp1						; intially OCR3B = 0x0000 to make the OC3 always low (for non-inverting phase correct)
 														; NOTE: the order matters
 	ldi				temp1, (1<<CS32|1<<CS30)			
@@ -262,15 +260,21 @@ pwm_timer3B_initialization:
 
 	ldi				temp1,  (1<<COM3B1|1<<WGM30)
 	sts				TCCR3A, temp1						; set OC3B to be phase correct (non-inverting mode), 8 bit top (0xFFFF), and
-	sei	
-													; enable global interrupt flag
-loop_infinitely:
-	rjmp			loop_infinitely						; loop infinitely
+	sei
+
+	
+											
+												
+rjmp keypad					; loop infinitely
 
 
 ; passenger needs to get off
+
+; returned correctly or not for each function
+;
 EXT_INT0:
 
+	;rcall switch_delay
 	push temp1
 	in temp1, SREG
 	push temp1
@@ -278,8 +282,11 @@ EXT_INT0:
 	ldi temp1, 1
 	sts	stop, temp1
 	
-
+	
+	ser temp1
 	out DDRC, temp1
+
+	ldi temp1, 0b00001111
 	out PORTC, temp1
 
 	
@@ -293,42 +300,33 @@ EXT_INT0:
 ;This interrupt will start the monorail
 EXT_INT1:
 
-	push			temp1
-	in				temp1, SREG
-	push			temp1
-	out				PORTC, temp1
-	ldi				temp1, 1
-	sts				start, temp1
+		;rcall switch_delay
+		push temp1
+		in temp1, SREG
+		push temp1
+	
+		ldi temp1, 1
+		sts	stop, temp1
+	
+	
+		ser temp1
+		out DDRC, temp1
 
-	pop				temp1
-	out				SREG, temp1
-	pop				temp1
-	reti
+		ldi temp1, 0b11110000
+		out PORTC, temp1
+
 	
 
-; This interrupt handler will only increments num_motor_hole_counter by one and returns
-EXT_INT2:
-	push			temp1
-	in				temp1, SREG
-	push			temp1
-	push			xl
-	push			xh
-
-	ld				temp1, x
-	inc				temp1								
-	st				x, temp1							; num_motor_hole_counter++
-
-	pop				xh
-	pop				xl
-	pop				temp1
-	out				SREG, temp1
-	pop				temp1
-	reti
+		pop temp1
+		out SREG, temp1
+		pop temp1
+		reti
 	
 
-; This interrupt handler will calculate current rps, and update the lcd monitor if 1 second has passed
-; else, just increments num_interrupts_timer0
-Timer1OVF:
+
+	
+
+Time2OVF:
 	
 	push			temp1
 	in				temp1, SREG
@@ -336,111 +334,46 @@ Timer1OVF:
 	push			temp2
 	push			temp3
 
-	
-
-	lds				temp1, time
-	inc				temp1
-	
-	;
-	cpi				temp1, 50
-	brne			not_second				; if num_interrupts_time0 != one_second_num_interrupts, goto if_a_hundred_ms_not_passed
-
-	clr				temp1
-	sts				time, temp1
-	
-	lds			temp1, start
-	cpi			temp1, 0
-	breq		waiting
-
-	lds				temp1, second_left
-	dec				temp1
-
-	sts				second_left, temp1
-	mov				temp2, temp1
-
-	
-	
-	convert_digit_to_ascii temp2							
-	do_display_a_character temp2
-
-	
-
-	cpi				temp1, 0	
-	breq			new_station
-
-	cpi				temp1, 1
-	breq			check_stop
-
-	lds temp3, start
-	cpi				temp3, 1
-
-	brne			finish_updating_pwm
-
-	rcall			increase_duty_cycle_function
-	
-	rjmp			finish_updating_pwm
-
-; the monorail is not operating
-not_second:
-	sts time, temp1	
-	rjmp if_a_hundred_ms_not_passed
-
-waiting:
-
-	clear_lcd_display
-	ldi temp1, 's'
-	do_display_a_character temp1
-	
-	rjmp if_a_hundred_ms_not_passed
-
-new_station:
-	
-	
-	ld				temp1, x+						;dummy data 
-	ld				temp1, x+
-	sts				second_left, temp1
-	rjmp 			finish_updating_pwm	
-
-
-	
-				
-
-finish_updating_pwm:
-	sts				num_motor_hole_counter, zero
-	rjmp			if_a_hundred_ms_not_passed	
-	
-
-if_a_hundred_ms_not_passed:
-	pop				temp3
-	pop				temp2
-	pop				temp1
-	out				SREG, temp1
-	pop				temp1
-	reti
-
-
-check_stop:
-
-	ser temp1
-	out	DDRC, temp1
-	out PORTC, temp1
-
-	lds temp1, stop
-	cpi temp1, 1
-	brne if_a_hundred_ms_not_passed	
-
 	clr temp1
 	out PORTC, temp1
-	rcall lower_duty_cycle_function
+
+	inc timer
+	cpi timer , 61
+
+	brne end_second
+
+	lds	temp1, second_left
+	dec temp1
+	sts second_left, temp1
+	clear_lcd_display
+
+	convert_digit_to_ascii temp1
+	do_display_a_character temp1
+
+	clr timer 
+
+	ser temp1
+	out PORTC, temp1
+
+end_second:
+
+	pop temp3
+	pop temp2
+	pop temp1
+	out SREG, temp1
+	pop temp1
+	reti
+
+	
 
 
-	rjmp if_a_hundred_ms_not_passed
 
-; A function that loads OCRN3B, lower  the value of it by 2, and store it back
-; Registers: temp1, temp2, temp3
-; Arguments: OCR3BH, OCR3BL
-; Return: -
+
+
+	
+
 lower_duty_cycle_function:
+
 	push			temp1
 	push			temp2
 	push			temp3
@@ -452,24 +385,7 @@ lower_duty_cycle_function:
 	sts				OCR3BH, temp1								; OCR3B -= 2
 	sts				OCR3BL, temp1
 
-/**cycle:
-	lds				temp1, OCR3BL
-	lds				temp2, OCR3BH								; temp2:temp1 = OCR3B
-
-	ldi				temp3, 5
-
-	cp				temp1, temp3
-	cpc				temp2, zero
-	brlt			lower_duty_cycle_function_end				; if OCR3B < 2, goto lower_duty_cycle_function_end
-	sub				temp1, temp3
-	sbc				temp2, zero									; temp2:temp1 -= 2
-
-	sts				OCR3BH, temp2								; OCR3B -= 2
-	sts				OCR3BL, temp1
-	rcall		wait_5ms
 	
-	rjmp			cycle**/
-
 	
 
 lower_duty_cycle_function_end:
@@ -478,7 +394,7 @@ lower_duty_cycle_function_end:
 	pop				temp1
 	ret
 
-; A function that loads OCRN3B, increase the value of it by 2, and store it back
+;  function that loads OCRN3B, increase the value of it by 2, and store it back
 ; Registers: temp1, temp2, temp3
 ; Arguments: OCR3BH, OCR3BL
 ; Return: -
@@ -488,20 +404,7 @@ increase_duty_cycle_function:
 	push			temp3
 
 
-	
-	lds				temp1, OCR3BL
-	lds				temp2, OCR3BH								; temp2:temp1 = OCR3B
-
-	ldi				temp3, $FD									; temp3 = 0xFD = 253
-
-	cp				temp3, temp1
-	cpc				zero,  temp2
-	brlt			increase_duty_cycle_function_end			; if OCR3B > 253, goto increase_duty_cycle_function_end
-
-	ldi				temp3, 2
-	add				temp1, temp3
-	adc				temp2, zero									; temp2:temp1 += 2
-
+	clr				temp2									; temp2:temp1 += 2
 	ser				temp1
 	sts				OCR3BH, temp2								
 	sts				OCR3BL, temp1								; OCR3B -= 2
@@ -512,77 +415,69 @@ increase_duty_cycle_function_end:
 	pop				temp1
 	ret
 
-; A function that clear the lcd, display the new rps number onto the screen, display "rps" onto lcd screen
-; and return.
-; Note: temp1 needs to contain the number that will be displayed
-; Registers: 
-; Arguments: temp1
-; Return: -
 
 
 
+
+
+
+
+keypad:
+
+	set_x			station_array	
+	ldi				temp1, 3
+	st				x+, temp1
+	ldi				temp1, 4
+	st				x+, temp1
+	ldi				temp1, 5
+	st				x, temp1
 
 
 	
-display_rps:
-	push			temp1
-	push			temp2
-	push			temp3
-	push			temp4
 
-	clear_lcd_display
+	ldi				temp1, 3
+	sts				number_of_stations, temp1
 
-	mov				temp3, temp1
-	ldi				temp2, 1						; temp2 = number of digit = 1 
-divide_rps_by_ten:
-	div_by_ten		temp3								; temp3 /= 10
-	cp				temp3, zero
-	breq			if_know_how_many_digit			; if temp3 == 0, goto if_know_how_many_digit
-	inc				temp2
-	rjmp			divide_rps_by_ten				
-if_know_how_many_digit:
-display_rps_loop_outer_start:
-	cp				zero, temp2
-	brsh			display_rps_loop_outer_end		; if i <= 0, goto display_rps_loop_outer_end
 	
-	mov				temp3, temp2
-	dec				temp3							; j = i - 1
+	set_y			stop_time_array
+	ldi				temp1, 3
+	st				y+, temp1
+	ldi				temp1, 4
+	st				y, temp1
 
-	mov				temp4, temp1					; temp4 = rps
-display_rps_loop_inner_start:
-	cp				zero, temp3
-	brsh			display_rps_loop_inner_end		; if j <= 0, goto display_rps_loop_outer_end
+	clr				temp1
+	sts				start, temp1
 
-	div_by_ten		temp4							; rps /= 10
+	clr				temp1
+	sts				stop, temp1
 
-	dec				temp3
-	rjmp			display_rps_loop_inner_start
+	rjmp			logic_main
 
-display_rps_loop_inner_end:
-	modulo_by_ten	temp4
-	convert_digit_to_ascii temp4
-	do_display_a_character temp4				
-
-	dec				temp2
-	rjmp			display_rps_loop_outer_start
-display_rps_loop_outer_end:
-	ldi				temp2, 'r'
-	do_display_a_character temp2
-	ldi				temp2, 'p'
-	do_display_a_character temp2
-	ldi				temp2, 's'
-	do_display_a_character temp2
-
-	pop				temp4
-	pop				temp3
-	pop				temp2
-	pop				temp1
-	ret
+logic_main:
 	
-; Display the character in macro_r1 to the lcd
-; Registers: macro_r1
-; Arguments: macro_r1
-; Return: -
+	set_x			station_array
+	set_y			stop_time_array
+
+	ld temp1, x
+	sts second_left, temp1
+
+	jmp halt
+
+
+halt:
+
+	ldi temp1, (1 << TOIE2)
+	sts TIMSK2, temp1
+
+	ser temp1
+	out DDRC, temp1
+	out PORTC, temp1
+
+	lds temp1, second_left
+	cpi temp1, 0
+	breq logic_main
+	rjmp halt
+
 display_a_character:
 	out		PORTF, macro_r1
 	lcd_ctrl_set	LCD_RS							; select the Data Register
@@ -747,21 +642,25 @@ waste_loop_exit:
 	ret								; 4 cycle ; total of 9n + 16 							; 4 cycle ; total of 9n + 16 
 
 
-waste_one_second:
+/**stop_at_station:
 
-	push temp1
-	clr temp1
+	clr macro_r1
+	ld macro_r2, y
+	
 
 loop:
 
-	cpi temp1, 10
+	cp macro_r1, macro_r2
 	breq exit
-	rjmp switch_delay
+	inc macro_r1
+	ldi temp1, 10
+loop1:
+	cpi temp1, 10
+	breq loop
 	inc temp1
-	rjmp loop
+	rjmp switch_delay
+	rjmp loop1
 
 exit:
-	
-	pop temp1
 	ret
-				
+	**/			
