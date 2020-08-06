@@ -275,6 +275,12 @@ input_reading_stage:			.byte	1					; a variable to keep track in which stage of 
 
 cur_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
 
+curr_input_time:			.byte	1					; a variable to store the time being input from the keypad
+
+station_name_array:			.byte	21 * 20					; a 2d array that can store 20 string each of size 20 (excluding null terminator)
+travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
+dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
+
 .cseg	
 		
 .org			0x000
@@ -383,9 +389,21 @@ display_pressed_character_finished:
 											; move on to reading the next sgae
 
 	cpi			return_val_l, ASTERISK_PRESSED
-	breq			input_reading_finish					; if the "ASTERISK" key is pressed, break out of the entire reading stage
-											; and move on to the next stage of simulating the railwy
+	breq			relative_branch_asterisk_resolve			; if the "ASTERISK" key is pressed, break out of the entire reading stage
+											; and move on to the next stage of simulating the railway
+	rjmp			relative_branch_asterisk_not_needed
+relative_branch_asterisk_resolve:
+	rjmp			input_reading_finish
+relative_branch_asterisk_not_needed:
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	breq			if_station_name_input_stage				; if input_reading_stage == STATION_NAME_READING , goto if_station_name_input_stage
+											; (which means the reads the next character being input for the current station name)
+	; If we arrive at this point, result_val_l will contain the number 0-9 which we need to store onto curr_input_time
+	mov			temp1, return_val_l					; temp1 = return value of display_pressed_digit_time (between 0-9)
+	rcall			update_curr_input_time					; update the curr_input_time according to the current return_val_l value
 
+if_station_name_input_stage:
 	rjmp			main_station_name					; continue scanning new pressed key
 
 continue_scanning_row:
@@ -400,14 +418,23 @@ no_switch_pressed:
 	ldi			temp3, 4						; temp3 = 4
 	cp			col, temp3
 	breq			relative_branch_resolve_main_station_name		; if col == 4, goto main
-	rjmp			relative_branch_resolve_main_station_namenot_needed
+	rjmp			relative_branch_resolve_main_station_name_not_needed
 relative_branch_resolve_main_station_name:
 	rjmp			main_station_name
-relative_branch_resolve_main_station_namenot_needed:
+relative_branch_resolve_main_station_name_not_needed:
 	rjmp			col_loop						; else, goto col_loop
 main_station_name_end:
-	clear_lcd_display								; clear the display to read the next input	
+	clear_lcd_display								; clear the display to read the next input
+	
+	; TODO: Store curr_input_time into dwell/travel array if input_reading_stage is equals DWELL_TIME_READING or TRAVEL_TIME_READING
+
 	rcall			change_input_reading_stage				; call change_input_reading_stage to change input_reading_stage variable accordingly
+
+	lds			temp1, input_reading_stage				
+	cpi			temp1, STATION_NAME_READING				
+	breq			update_timer0_state					; if the new input_reading_stage == STATION_NAME_READING, goto update_input_stage
+	sts			curr_input_time, zero					; otherwise, clear curr_input_time
+update_timer0_state:			
 	cli
 	set_timer0_according_to_input_stage						; macro that stops timer0 if input reading stage != STATION_NAME_READING, else it initialize it
 	sei										; NOTE: this macro shouldn't be interrupted by timer0 (since it is changing the state of it)
@@ -595,6 +622,28 @@ display_pressed_character_station_name_end:
 	pop			temp1
 	ret
 
+; A function to update the value of curr_input_time as a new character is being input
+; Essentially what it does is curr_input_time = curr_input_time * 10 + temp1, where temp1 is a number between 0...9
+; Registers: temp2, temp3
+; Arguments: temp1
+; Return: -
+update_curr_input_time:
+	push			temp1
+	push			temp2
+	push			temp3
+	; TODO: Check overflows happens
+	lds			temp2, curr_input_time					; temp2 = curr_input_time
+	ldi			temp3, 10						; temp3 = 10
+	mul			temp2, temp3						; r1:r0 = curr_input_time * 10
+	mov			temp2, r0						; temp2 = r0
+
+	add			temp2, temp1						; temp2 = curr_input_time * 10 + temp1
+	sts			curr_input_time, temp2					; curr_input_time = curr_input_time * 10 + temp1
+
+	pop			temp3
+	pop			temp2
+	pop			temp1
+	ret
 
 ; Interrupt handler for Timer0 overflow. This interrupt handler is mainly used by they keypad system to allow user to type multiple character
 ; from a single key (e.g. key "2" allows user to enter 'A','B' and 'C').
