@@ -286,7 +286,25 @@ modulus_one_byte_by_loop_end:
 		
 .org					0x200
 
-current_lcd_pointer_pos:		.byte	1					; a variable to keep track the current position of the lcd cursor
+current_lcd_pointer_pos:		.byte	1
+
+prev_row:				.byte	1
+prev_col:				.byte	1					; prev row and col will store the previous key pressed onto the keypad
+last_typed_character:			.byte	1					; a variable to store the last typed character on the LCD 
+
+num_timer0_ovf:				.byte	2					; a variable to store how many time timer0 has overflowed
+
+input_reading_stage:			.byte	1					; a variable to keep track in which stage of input reading are the program currently in
+
+curr_input_time:			.byte	1					; a variable to store the time being input from the keypad
+
+station_name_array:			.byte	21 * 20					; a 2d array that can store 20 string each of size 20 (excluding null terminator)
+travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
+dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
+curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
+curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
+
+
 second_left: .byte 1
 stop_flag:		.byte  1
 start_flag:		.byte  1
@@ -297,11 +315,12 @@ n_stations:			.byte	1
 
 
 
-station_array:				.byte	3					; a variable to store the current measured rps
-stop_time_array:			.byte	3
+;station_array:				.byte	3					; a variable to store the current measured rps
+;stop_time_array:			.byte	3
 stop_station:				.byte	1
 start_after_stop:			.byte	1
 suspence:					.byte	1
+
 .cseg
 
 .org					0x000
@@ -605,7 +624,7 @@ increase_duty_cycle_function_end:
 
 keypad:
 
-	set_x			station_array	
+	set_x			travel_time_array	
 	ldi				temp1, 3
 	st				x+, temp1
 	ldi				temp1, 4
@@ -620,7 +639,7 @@ keypad:
 	sts				number_of_stations, temp1
 
 	
-	set_y			stop_time_array
+	set_y			dwell_time_array
 	ldi				temp1, 3
 	st				y+, temp1
 	ldi				temp1, 4
@@ -640,8 +659,8 @@ keypad:
 
 logic_main:
 	
-	set_x			station_array
-	set_y			stop_time_array
+	set_x			travel_time_array
+	set_y			dwell_time_array
 
 	ld temp1, x+				;where we are
 	sts second_left, temp1
