@@ -22,6 +22,7 @@
 .equ			OTHER_CHARACTER_PRESSED = 13							; constant returned by display_pressed's function to indicates character other than
 													; ENTER has been pressed
 .equ			UNKNOWN_CHARACTER_PRESSED = 14							; constant to indicates an unknow character has been pressed
+.equ			BACKSPACE_PRESSED = 15
 
 .equ			STATION_NAME_READING = 0x1
 .equ			TRAVEL_TIME_READING = 0x2
@@ -117,32 +118,32 @@ if_no_shift_lcd_left:
 ; macro to get the current address of the pointer in the lcd and store it onto @0
 .macro do_get_lcd_pointer_address
 	clr		macro_r1
-	out		DDRF, macro_r1						; set all port F as input to read the address counter
-	out		PORTF, macro_r1						; dismiss the pull-up resistor
-	lcd_ctrl_set	LCD_RW							; set LCD to read mode
-	nop							
-	lcd_ctrl_set	LCD_E							; set enable bit in lcd
+	out		DDRF, macro_r1							; set all port F as input to read the address counter
+	out		PORTF, macro_r1							; dismiss the pull-up resistor
+	lcd_ctrl_set	LCD_RW								; set LCD to read mode
+	nop								
+	lcd_ctrl_set	LCD_E								; set enable bit in lcd
 	nop
 	nop
 	nop
-	in		macro_r1, PINF						; read the address counter from port F
-	lcd_ctrl_clr	LCD_E							; disable enable bit in lcd
+	in		macro_r1, PINF							; read the address counter from port F
+	lcd_ctrl_clr	LCD_E								; disable enable bit in lcd
+	nop	
 	nop
 	nop
-	nop
-	lcd_ctrl_clr	LCD_RW							; set the R/W register in the lcd to 0 again
+	lcd_ctrl_clr	LCD_RW								; set the R/W register in the lcd to 0 again
 	ser		macro_r2
-	out		DDRF, macro_r2						; makes port F output again
+	out		DDRF, macro_r2							; makes port F output again
 
-	mov		@0, macro_r1						; @0 = LCD DD-RAM addresss counter (with addition of busy flag)
+	mov		@0, macro_r1							; @0 = LCD DD-RAM addresss counter (with addition of busy flag)
 
-	rcall		lcd_wait						; wait for lcd to not be busy, then return
+	rcall		lcd_wait							; wait for lcd to not be busy, then return
 .endmacro
 
 ; macro to store @0 into the DD-RAM address counter of the LCD 
 .macro do_store_lcd_pointer_address
-	sbr		@0, 0x80 						; ensure that the BF is set
-	out		PORTF, @0						; by defaulte LCD_RW, LCD_RS = 0, so we can immediately write @0 into the D0-7 register
+	sbr		@0, 0x80 							; ensure that the BF is set
+	out		PORTF, @0							; by defaulte LCD_RW, LCD_RS = 0, so we can immediately write @0 into the D0-7 register
 	lcd_ctrl_set	LCD_E
 	nop
 	nop
@@ -152,7 +153,15 @@ if_no_shift_lcd_left:
 	nop
 	nop
 
-	rcall		lcd_wait						; wait for lcd to not be busy, then return
+	rcall		lcd_wait							; wait for lcd to not be busy, then return
+.endmacro
+
+; macro to decrements the lcd DD-RAM address counter by one. Note: it requires one extra register @0 and it changes the value
+.macro decrement_lcd_pointer_address
+	
+	do_get_lcd_pointer_address	@0						; @0 contain the current pointer address in the LCD
+	dec				@0						; LCD pointer adddress--
+	do_store_lcd_pointer_address	@0						; update the DD-RAM address counter in lcd
 .endmacro
 
 ; macro to shift the lcd display to the left
@@ -167,7 +176,7 @@ if_no_shift_lcd_left:
 
 ; macro	to clear the display of the screen
 .macro		clear_lcd_display
-	sts		current_lcd_pointer_pos, zero					; set the current_lcd_pointer_pos = 0
+	sts		current_lcd_pointer_pos, zero				; set the current_lcd_pointer_pos = 0
 	do_set_lcd_D_bits	0b00000001	
 .endmacro
 
@@ -374,7 +383,6 @@ row_loop:
 											; else, display_station_name_character
 display_station_name_character:
 	cli										; clear global interrupt bit
-
 	rcall			display_pressed_character_station_name			; display the pressed character onto LCD
 
 	in			temp1, TIFR0
@@ -395,6 +403,9 @@ display_pressed_character_finished:
 	breq			main_station_name_end					; if the "ENTER" key is pressed, break out the current stage input reading and
 											; move on to reading the next sgae
 
+	cpi			return_val_l, BACKSPACE_PRESSED
+	breq			jump_back_to_main_station_name				; if the "BACKSPACE" key is pressed, continue scanning the next character
+
 	cpi			return_val_l, ASTERISK_PRESSED
 	breq			relative_branch_asterisk_resolve			; if the "ASTERISK" key is pressed, break out of the entire reading stage
 											; and move on to the next stage of simulating the railway
@@ -414,8 +425,7 @@ if_station_name_input_stage:
 	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq			jump_back_to_main_station_name				; if return_val_l == UNKNOWN_PRESSED_CHARACTER, goto jump_back_to_main_station_name
 
-	; TODO: check if name has exceeded 20 characters here
-
+	; TODO: check if name has exceeded 20 characters here (fixed)
 	mov			temp1, return_val_l					; return_val_l = last_typed_character
 	rcall			store_curr_character_station_name			; otherwise, it is a valid character, store it onto the current station name array
 
@@ -555,9 +565,7 @@ relative_branch_not_needed2:
 											; typed character with a new character. e.g.replaces 'A' with 'B'
 
 
-	do_get_lcd_pointer_address  temp1						; temp1 contain the current pointer address in the LCD
-	dec			temp1							; LCD pointer adddress--
-	do_store_lcd_pointer_address temp1						; update the DD-RAM address counter in lcd
+	decrement_lcd_pointer_address	temp1
 
 	lds			temp1, current_lcd_pointer_pos				; temp1 = current_lcd_pointer_pos
 	cpi			temp1, MAXCHAR_DISPLAY + 1			
@@ -608,10 +616,19 @@ new_character_pressed:
 	breq			check_third_column1					; if col == 3, goto check_third_column1
 
 	cp			row, temp1
-	breq			check_third_row1					; if row == 3, goto check_third_row1
+	breq			check_third_row1_relative_branch_resolve		; if row == 3, goto check_third_row1
 											; else, row and col is not 3, find the new chararacter to display
+	rjmp			search_for_new_character_to_display
+
+check_third_row1_relative_branch_resolve:
+	rjmp			check_third_row1						
+	
 
 search_for_new_character_to_display:
+	lds			temp1, curr_station_name_num_characters
+	cpi			temp1, 20
+	brsh			search_for_new_character_to_display_end			; if curr_station_name_num_characters >= 20, goto search_for_new_character_to_display_en
+											; (since we are not allowed to exceed 20 character for single station name).
 	find_character_according_row_col	temp1, temp2				; temp1 will contain the first character corresponding to which key pressed
 											; e.g temp1 can contain A, D, G, J, M, P, S, V, Y
 
@@ -624,13 +641,70 @@ search_for_new_character_to_display:
 	clear_two_bytes		num_timer0_ovf
 
 	mov			return_val_l, temp1					; return_val_l = last_typed_character
+search_for_new_character_to_display_end:
 	rjmp			display_pressed_character_station_name_end
 
 check_third_column1:
 	ldi			temp1, 0
 	cp			row, temp1
-	brne			check_third_column1_end
+	brne			check_if_backspace_pressed
 	ldi			return_val_l, ENTER_PRESSED				; return_l = ENTER_PRESSED
+	rjmp			check_third_column1_end
+check_if_backspace_pressed:
+	ldi			temp1, 1
+	cp			row, temp1
+	brne			check_third_column1_end_relative_branch_resolve1	; if row != 1, goto check_third_column1_end	
+	rjmp			check_third_column1_end_relative_branch_not_needed1
+check_third_column1_end_relative_branch_resolve1:
+	rjmp			check_third_column1_end
+check_third_column1_end_relative_branch_not_needed1:
+
+	ldi			return_val_l, BACKSPACE_PRESSED				; return_val_l = BACKSPACE_PRESSED
+	
+	lds			temp1, curr_station_name_num_characters
+	cpi			temp1, 0
+	breq			check_third_column1_end_relative_branch_resolve2	; if curr_station_name_num_characters == 0, goto check_third_column1_end
+	rjmp			check_third_column1_end_relative_branch_not_needed2
+check_third_column1_end_relative_branch_resolve2:
+	rjmp			check_third_column1_end
+check_third_column1_end_relative_branch_not_needed2:
+											; othwewise, delete the last character from station_name_array and also delete the last character
+											; on the lcd 
+
+	lds			temp1, current_lcd_pointer_pos
+	cpi			temp1, MAXCHAR_DISPLAY + 1
+	brlt			decrements_lcd_pointer_pos_variable1			; if current_lcd_pointer_pos < MAXCHAR_DISPLAY + 1, goto decrements_lcd_pointer_pos_variable
+		
+	shift_lcd_right									; otherwise, shift lcd to the right first
+decrements_lcd_pointer_pos_variable1:
+	dec			temp1
+	sts			current_lcd_pointer_pos, temp1				 ; current_lcd_pointer_pos--
+
+	lds			temp1, curr_station_name_num_characters
+	dec			temp1
+	sts			curr_station_name_num_characters, temp1			; curr_station_name_num_characters--
+	decrement_lcd_pointer_address temp1						; Note: temp1 value will be changed
+
+	ldi			temp1, ' '
+	do_display_a_character	temp1							; ovewrite the previous character with ' '
+
+	lds			temp1, current_lcd_pointer_pos
+	cpi			temp1, MAXCHAR_DISPLAY + 1
+	brlt			decrements_lcd_pointer_pos_variable2			; if current_lcd_pointer_pos < MAXCHAR_DISPLAY + 1, goto decrements_lcd_pointer_pos_variable
+
+	shift_lcd_right
+decrements_lcd_pointer_pos_variable2:
+	dec			temp1
+	sts			current_lcd_pointer_pos, temp1				; current_lcd_pointer_pos-- (since when we display ' ', it increases the current_lcd_pointer_pos)
+
+	ldi			temp1, KEYPAD_NOT_PRESSED
+	sts			prev_col, temp1
+	sts			prev_row, temp1
+	sts			last_typed_character, temp1
+
+	clear_two_bytes		num_timer0_ovf
+
+	decrement_lcd_pointer_address temp1
 check_third_column1_end:
 	rjmp			display_pressed_character_station_name_end	
 
@@ -756,15 +830,79 @@ update_curr_input_time:
 	lds			temp2, curr_input_time					; temp2 = curr_input_time
 	ldi			temp3, 10						; temp3 = 10
 	mul			temp2, temp3						; r1:r0 = curr_input_time * 10
+	cp			zero, r1
+	brsh			overflow_did_not_occured1				; if r1 <= 0, goto overflow_did_not_occured
+	rcall			time_overflow_handler					; otherwise call the time_overflow_handler
+	rjmp			update_curr_input_time_end
+
+overflow_did_not_occured1:
 	mov			temp2, r0						; temp2 = r0
 
 	add			temp2, temp1						; temp2 = curr_input_time * 10 + temp1
+	brcc			overflow_did_not_occured2
+	rcall			time_overflow_handler					; otherwise call the time_overflow_handler
+	rjmp			update_curr_input_time_end
+overflow_did_not_occured2:
 	sts			curr_input_time, temp2					; curr_input_time = curr_input_time * 10 + temp1
 
+	
+update_curr_input_time_end:
 	pop			temp3
 	pop			temp2
 	pop			temp1
 	ret
+
+; A function that handle the case when current input dwell/travel time overflow (or the user input something exceeding 255 for the time).
+; it displays "Time exceeded 255" onto the lcd for 3.5s and clear curr_input_time 
+; Registers: temp1
+; Arguments: -
+; Return: -
+time_overflow_handler:
+	push			temp1
+	clear_lcd_display
+
+	ldi			temp1, 'T'
+	do_display_a_character	temp1
+	ldi			temp1, 'i'
+	do_display_a_character	temp1
+	ldi			temp1, 'm'
+	do_display_a_character	temp1
+	ldi			temp1, 'e'
+	do_display_a_character	temp1
+	ldi			temp1, ' '
+	do_display_a_character	temp1
+	ldi			temp1, 'e'
+	do_display_a_character	temp1
+	ldi			temp1, 'x'
+	do_display_a_character	temp1
+	ldi			temp1, 'c'
+	do_display_a_character	temp1
+	ldi			temp1, 'e'
+	do_display_a_character	temp1
+	ldi			temp1, 'e'						; display "Time exceeded 255" onto the lcd
+	do_display_a_character	temp1
+	ldi			temp1, 'd'
+	do_display_a_character  temp1
+	ldi			temp1, 'e'
+	do_display_a_character  temp1
+	ldi			temp1, 'd'
+	do_display_a_character  temp1
+	ldi			temp1, ' '
+	do_display_a_character  temp1
+	ldi			temp1, '2'
+	do_display_a_character  temp1
+	ldi			temp1, '5'
+	do_display_a_character  temp1
+	ldi			temp1, '5'
+	do_display_a_character  temp1
+
+	sts			curr_input_time, zero
+
+	rcall			delay_three_half_seconds
+	clear_lcd_display	
+	pop			temp1
+	ret
+
 
 ; Interrupt handler for Timer0 overflow. This interrupt handler is mainly used by they keypad system to allow user to type multiple character
 ; from a single key (e.g. key "2" allows user to enter 'A','B' and 'C').
