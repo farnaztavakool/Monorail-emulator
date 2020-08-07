@@ -318,6 +318,7 @@ n_stations:			.byte	1
 
 start_after_stop:			.byte	1
 suspence:					.byte	1
+blink:						.byte	1
 
 .cseg
 
@@ -402,7 +403,7 @@ keypad_initialization:
 	sts			curr_num_parameters, zero				; curr_num_parameters = 0
 	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
 
-	rcall			timer0_initialization	
+	;rcall			timer0_initialization	
 
 external_interrupt_initialization:
 	clr				temp1
@@ -533,7 +534,11 @@ Time2OVF:
 	push			temp2
 	push			temp3
 
-	
+	lds temp1, wait_time			; check if we are waiting at a station 
+	cpi temp1, 0
+	brne check_blink
+
+second_time:
 	inc timer
 	cpi timer , 61
 
@@ -548,11 +553,28 @@ Time2OVF:
 		
 	lds temp1, wait_time			; check if we are waiting at a station 
 	cpi temp1, 0
-	brne wait_at_station
+	brne do_wait
 	
 	rjmp end_second
 
+do_wait: rjmp  wait_at_station
 do_end_second: rjmp end_second
+
+check_blink:
+
+	lds temp1, blink
+	inc temp1
+	sts blink, temp1
+
+	cpi temp1, 20
+	brne second_time
+	ldi temp1, 0b10101010
+	out PORTC, temp1
+	clr temp1
+	out PORTC, temp1
+	clr temp1
+	sts blink, temp1
+	rjmp second_time
 
 decrease_second_left:
 
@@ -566,8 +588,8 @@ decrease_second_left:
 	convert_digit_to_ascii temp1
 	do_display_a_character temp1
 
-	;convert_digit_to_ascii temp3
-	;do_display_a_character temp3
+	convert_digit_to_ascii temp3
+	do_display_a_character temp3
 	rjmp end_second
 	
 wait_at_station:
@@ -664,27 +686,32 @@ increase_duty_cycle_function_end:
 
 
 logic_main:
-	
-	set_x			travel_time_array
-	set_y			dwell_time_array
 
-	ld temp1, x+				;where we are
-	sts second_left, temp1
 
+	;jmp halt
 	ldi temp1, 1
-	sts middle_flag, temp1			; not in the middle
+	sts middle_flag, temp1
+	out DDRC, temp1
+	ser temp1
+	out PORTC, temp1	
+			
+	ldi temp1, 0
 	sts n_stations, temp1
+
+	rcall	find_station_travel_time
+	rcall display_station_name
 
 	ldi temp1, 0
 	sts stop_flag, temp1
 	sts	wait_at_station, temp1	
 	sts suspence, temp1
-
+	sts blink, temp1
 
 	
 
 	ldi temp1, 1
 	sts start_flag, temp1		;will set the flag when we need to start moving
+	;rcall 	display_next_station
 
 	jmp halt
 
@@ -696,15 +723,19 @@ halt:
 
 	ser temp1
 	out DDRC, temp1
+	out PORTC, temp1
 	
+	ldi temp1, 1
+	sts start_flag, temp1	
 one_loop:
 
-	lds temp1, number_of_stations
+	lds temp1, curr_num_parameters	
 	inc temp1
+	;inc temp1
 
 	lds temp2, n_stations
 	cp temp1, temp2
-	breq end_loop
+	;breq end_loop
 
 check_suspence:
 
@@ -720,7 +751,7 @@ check_start:
 check_start_after_stop:
 	lds temp1, start_after_stop
 	cpi temp1, 1 
-	breq start_moving_again
+;	breq start_moving_again
 
 check_second_left:
 	lds temp1, second_left
@@ -746,13 +777,17 @@ start_moving:
 
 start_moving_again:
 	
+	;rcall display_string
+
 	ldi temp1, 0
 	sts stop_flag, temp1
 
-	ld temp1, x+			;how long to the new station
-	sts second_left, temp1
+	;ld temp1, x+			;how long to the new station
+	;sts second_left, temp1
+	rcall increase_station
+	rcall find_station_travel_time
 
-	ld temp1, y+
+	;ld temp1, y+
 	rcall increase_duty_cycle_function
 
 	ldi temp1, 1
@@ -761,9 +796,13 @@ start_moving_again:
 	ldi temp1, 0
 	sts start_after_stop, temp1
 	ldi temp1, 1
-	sts	start_flag, temp1
+	sts	start_flag, temp1	
 
-	;inc n_stations
+	;lds temp1, n_stations
+	;inc temp1
+	;sts n_stations, temp1
+
+
 	rjmp halt
 
 	
@@ -781,24 +820,130 @@ do_we_stop:
 
 	rcall lower_duty_cycle_function
 
-	ld	temp1, y
-	sts wait_time, temp1			;how long to wait at the station 
+	rcall find_stop_time
 	
-	
+		;rcall display_string
+
 	rjmp halt
 	; how long to wait? the new station 				
 
 new_station:
 
-	ld temp1, x+			;how long to the new station
-	sts second_left, temp1
+	rcall increase_station
+	rcall find_station_travel_time
+	clear_lcd_display
 
-	ld temp1, y+
+	rcall display_station_name
+	rjmp halt
+	;rcall display_next_station
+increase_station:
 
 	lds temp1, n_stations
 	inc temp1
 	sts n_stations, temp1
-	rjmp halt
+	ret
+
+find_station_travel_time:
+
+	push			temp1
+	push			temp2
+	push			xl
+	push			xh
+
+	lds				temp1, n_stations				
+	
+			
+	set_x			travel_time_array			
+
+	add				xl, temp1
+	
+	ld				temp1, x					; y = &station_name_array[next station index]
+	sts				second_left, temp1
+
+
+	pop			xh
+	pop			xl
+	pop			temp2
+	pop			temp1
+	ret
+
+find_stop_time:
+
+	push			temp1
+	push			temp2
+	push			xl
+	push			xh
+
+	lds				temp1, n_stations				
+	
+			
+	set_x			dwell_time_array			
+
+	add				xl, temp1
+	
+	ld				temp1, x					; y = &station_name_array[next station index]
+	sts				wait_time, temp1
+
+	
+	
+
+	pop			xh
+	pop			xl
+	pop			temp2
+	pop			temp1
+	ret
+
+display_station_name:
+
+	push			temp1
+	push			temp2
+	push			temp3
+	push			yl
+	push			yh
+
+	lds			temp1, n_stations				
+							; temp1 = curr_station_index + 1
+
+
+
+	
+	ldi				yl, low(station_name_array)
+	ldi				yh, high(station_name_array)				
+	ldi				temp2, STATION_NAME_SIZE				; temp2 = STATION_NAME_SIZE
+
+	mul			temp1, temp2						; r1:r0 = temp1 * STATION_NAME_SIZE
+	mov			temp1, r0
+	mov			temp2, r1
+	
+	add			yl, temp1
+	adc			yh, temp2						; y = &station_name_array[next station index]
+
+	rcall			display_string_onto_lcd					; display the next station's name
+
+	pop			yh
+	pop			yl
+	pop			temp3
+	pop			temp2
+	pop			temp1
+	ret
+
+	
+
+display_string:
+	push				temp1
+	
+
+display_string_loop_start:
+	ld					temp1, z+						; temp1 = string[i]
+	cpi					temp1, 0
+	breq				display_string_loop_end			; if temp1 == '\0', goto display_string_loop_end
+	do_display_a_character temp1
+	rjmp				display_string_loop_start
+display_string_loop_end:
+
+	
+	pop					temp1
+	ret
 
 keypad_main:
 	
@@ -815,6 +960,8 @@ col_loop:
 											; else, a key is pressed, search for it 
 	clr			row							; row = 0
 	ldi			mask1, ROWMASK_INIT					; mask = 0b00000001
+
+				; mask = 0b00000001
 row_loop:
 	mov			temp2, temp1						; temp2 = the state of current column
 	and			temp2, mask1						
@@ -938,8 +1085,10 @@ update_timer0_state:
 input_reading_finish:									; input reading finish at this point
 
 	clear_lcd_display
-	rcall			display_all_arrays
+	;rcall			display_all_arrays
 	
+	ldi temp1, (0 << TOIE0)
+	sts TIMSK0, temp1
 	rjmp logic_main
 
 
