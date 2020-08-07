@@ -1328,3 +1328,183 @@ delay_three_half_seconds:
 	rcall			switch_delay							; delay approx 3.2s
 	ret
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+.cseg
+station_prompt: 'E','n','t','e','r',' ','s','t','a','t','i','o','n',':'
+travel_time_prompt: 'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':'
+
+
+
+; USART macros//////////////////////////////////////////////////////////////////
+
+.macro USART_Init
+	ldi		macro_r1, high(MYUBRR)
+	sts		UBRR0H, macro_r1
+	ldi		macro_r1, low(MYUBRR)
+	sts		UBRR0L, macro_r1							; set up the baud rate on the board
+
+	ldi		macro_r1, (1<< TXEN0| 1 <<RXEN0)
+	sts		UCSR0B, macro_r1							; enable transmitter and receiver
+
+	ldi		macro_r1, (1<< USBS0|3 <<UCSZ00)					; set frame structure. 8 data bit and 2 stop bit
+	sts		UCSR0C, macro_r1
+.endmacro
+
+.macro USART_Transmit
+	;Wait for empty transmit buffer
+USART_Transmit_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, UDRE0
+	rjmp		USART_Transmit_loop							; if USART0 data register is empty, put the data into the buffer
+
+	sts		UDR0, @0
+
+.endmacro
+
+.macro USART_Receive
+USART_Receiver_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, RXC0
+	rjmp		USART_Receiver_loop							; if USART0 data register is empty, put the data into the buffer
+
+	lds		@0, UDR0
+.endmacro
+
+.macro check_valid_station
+; A function to check that correct character for station names
+; Only 'A - Z', 'a - z', ' ', or '\n' is valid
+check_station_name_character:
+	cpi		@0, 10		; Check against ASCII code for '\n'
+	breq		Valid_input
+	cpi		@0, 32		; Check against ASCII code for ' '
+	breq		Valid_input
+	cpi		@0, 65		; Anything else below 65 is not valid
+	brlt		Invalid_input
+	cpi		@0, 91		; Within 'A - Z' range
+	brlt		Valid_input
+	cpi		@0, 97		; Between 91 nad 97 is invalid
+	brlt		Invalid_input
+	cpi		@0, 123		; Within 'a - z' range
+	brlt		Valid_input
+
+Invalid_input:
+	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+
+Valid_input:
+	ldi return_val_l, @0
+
+.macro check_valid_time
+; A function to check valid character for time input
+; Only '0-9', '*', '
+check_time_input_character:
+	cpi		@0, 10		; Check for '\n'
+	breq		Valid_input
+	cpi		@0, 48		; Below 48 is not valid
+	brlt		Invalid_input
+	cpi		@0, 58		; Within '0 - 9'
+	brlt		Valid_input
+
+Invalid_input:
+	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+
+Valid_input:
+	ldi return_val_l, @0
+
+
+
+
+
+
+
+
+; USART function///////////////////////////////////////////////////////////////////
+USART initiation:
+	USART_Init
+	lds		temp1, input_reading_stage
+
+check_input_parameter:
+	cpi		temp1, STATION_NAME_READING
+	breq		reading_STATION_NAME_input_start
+	cpi		temp1, TRAVEL_TIME_READING
+	breq		reading_TRAVEL_TIME_input
+	cpi		temp1, DWELL_TIME_READING
+	breq		reading_DWELL_TIME_input
+	cpi		temp1, FINISH_READING
+
+reading_STATION_NAME_input_start:
+	; initialise to write to station_array
+
+reading_STATION_NAME_input_loop:
+	USART_receive	temp2
+	check_valid_station temp2
+	cpi		return_val_l, '\n'
+	breq		reading_STATION_NAME_input_end
+	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq		handle_wrong_input
+	st		x+, temp2
+	rjmp		reading_STATION_NAME_input_loop
+
+reading_STATION_NAME_input_end:
+	st		x+, zero
+	rcall		change_input_reading_stage
+
+reading_TRAVEL_TIME_input_start:
+	; initialise to write to travel_array
+
+reading_TRAVEL_TIME_input_loop:
+	USART_receive	temp2
+	check_valid_time temp2
+	cpi		temp2, '\n'
+	breq		reading_TRAVEL_TIME_input_loop_end
+	st		x+, temp2
+	rjmp		reading_TRAVEL_TIME_input_loop_loop
+
+reading_TRAVEL_TIME_input_loop_end:
+	rcall		change_input_reading_stage
+
+reading_DWELL_TIME_input_start:
+	; initialise to write to dwell_array
+
+reading_DWELL_TIME_input_loop:
+	USART_receive	temp2
+	; check input
+	cpi		temp2, '\n'
+	breq		reading_DWELL_TIME_input_end
+	st		x+, temp2	
+	rjmp		reading_DWELL_TIME_input_loop
+
+reading_DWELL_TIME_input_end:
+	rcall		change_input_reading_stage
+
+handling_worng_input:
