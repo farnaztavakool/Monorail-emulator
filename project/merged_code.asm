@@ -313,6 +313,7 @@ wait_time:		.byte	1
 number_of_stations:	.byte 1
 n_stations:			.byte	1
 
+emergency_stop:	.byte	1
 
 
 
@@ -479,6 +480,10 @@ EXT_INT0:
 	in temp1, SREG
 	push temp1
 	
+	lds temp1, stop_flag
+	cpi temp1, 1 
+	breq emergency
+
 	ldi temp1, 1
 	sts	stop_flag, temp1
 	
@@ -488,9 +493,16 @@ EXT_INT0:
 
 	ldi temp1, 0b00001111
 	out PORTC, temp1
+	rjmp end_interrupt
+
+emergency:
+	ldi temp1, 1
+	sts emergency_stop, temp1
+
 
 	
-
+	
+end_interrupt:
 	pop temp1
 	out SREG, temp1
 	pop temp1
@@ -571,7 +583,7 @@ check_blink:
 
 	cpi temp1, 20
 	brne second_time
-	ldi temp1, 0b11001100
+	ldi temp1, 0b00001100
 	out PORTC, temp1
 	
 
@@ -720,7 +732,7 @@ logic_main:
 	sts suspence, temp1
 	sts blink, temp1
 	sts start_after_stop, temp1
-
+	sts emergency_stop, temp1
 	
 
 	ldi temp1, 1
@@ -749,6 +761,12 @@ one_loop:
 	lds temp2, n_stations
 	cp temp1, temp2
 	breq end_loop
+
+check_emeregency:
+
+	lds temp1, emergency_stop
+	cpi	temp1, 1
+	breq do_stop_emergency
 
 check_suspence:
 
@@ -781,12 +799,14 @@ check_second_left:				; we only need to check the second_left if we are not stop
 
 rjmp halt
 
+do_stop_emergency: rjmp stop_emergency
 end_loop: 
 
 	rcall lower_duty_cycle_function
 	ldi temp1, ( 0<< TOIE2)
 	sts TIMSK2, temp1
 	rjmp end_loop
+
 
 start_moving:
 
@@ -864,6 +884,35 @@ increase_station:
 	inc temp1
 	sts n_stations, temp1
 	ret
+stop_emergency:
+
+	ldi temp1, ( 0<< TOIE2)
+	sts TIMSK2, temp1
+
+	clear_lcd_display
+
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'M'
+	do_display_a_character	temp1
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'R'
+	do_display_a_character	temp1
+	ldi			temp1, 'G'
+	do_display_a_character	temp1
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'N'
+	do_display_a_character	temp1
+	ldi			temp1, 'c'
+	do_display_a_character	temp1
+	ldi			temp1, 'Y'
+	do_display_a_character	temp1
+	
+
+	rcall lower_duty_cycle_function
+	loop_inf: rjmp loop_inf
 
 find_station_travel_time:
 
