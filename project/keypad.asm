@@ -1361,8 +1361,10 @@ delay_three_half_seconds:
 
 
 .cseg
-station_prompt: 'E','n','t','e','r',' ','s','t','a','t','i','o','n',':'
-travel_time_prompt: 'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':'
+station_prompt:			.db	'E','n','t','e','r',' ','s','t','a','t','i','o','n',':','\0'
+travel_time_prompt:		.db	'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':','\0'
+dwell_time_prompt:		.db	'E','n','t','e','r',' ','d','w','e','l','l',' ','t','i','m','e',':','\0'
+wrong_input:			.db	'I','n','v','a','l','i','d',' ','i','n','p','u','t',' ','d','e','t','e','c','t','e','d','\0'
 
 
 
@@ -1464,9 +1466,11 @@ check_input_parameter:
 
 reading_STATION_NAME_input_start:
 	; initialise to write to station_array
+	set_y		station_prompt
+	rcall		transmit_string
 
 reading_STATION_NAME_input_loop:
-	USART_receive	temp2
+	USART_Receive	temp2
 	check_valid_station temp2
 	cpi		return_val_l, '\n'
 	breq		reading_STATION_NAME_input_end
@@ -1481,12 +1485,16 @@ reading_STATION_NAME_input_end:
 
 reading_TRAVEL_TIME_input_start:
 	; initialise to write to travel_array
+	set_y		travel_time_prompt
+	rcall		transmit_string
 
 reading_TRAVEL_TIME_input_loop:
-	USART_receive	temp2
+	USART_Receive	temp2
 	check_valid_time temp2
-	cpi		temp2, '\n'
+	cpi		return_value_l, '\n'
 	breq		reading_TRAVEL_TIME_input_loop_end
+	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq		handle_wrong_input
 	st		x+, temp2
 	rjmp		reading_TRAVEL_TIME_input_loop_loop
 
@@ -1495,16 +1503,39 @@ reading_TRAVEL_TIME_input_loop_end:
 
 reading_DWELL_TIME_input_start:
 	; initialise to write to dwell_array
+	set_y		dwell_time_prompt
+	rcall		transmit_string
 
 reading_DWELL_TIME_input_loop:
-	USART_receive	temp2
-	; check input
-	cpi		temp2, '\n'
+	USART_Receive	temp2
+	check_valid_time temp2
+	cpi		retrun_value_l, '\n'
 	breq		reading_DWELL_TIME_input_end
+	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq		handle_wrong_input
 	st		x+, temp2	
 	rjmp		reading_DWELL_TIME_input_loop
 
 reading_DWELL_TIME_input_end:
 	rcall		change_input_reading_stage
+	rjmp		reading_STATION_NAME_input_start
 
-handling_worng_input:
+handling_wrong_input:
+	set_y		wrong_input
+	rcall		transmit_string
+	rjmp		check_input_parameter
+
+; A function to display string on USART
+transmit_string:
+	push		temp1
+
+transmit_string_loop:
+	ld		temp1, y+
+	cpi		temp1, 0
+	breq		tranmsit_string_end
+	USART_Transmit	temp1
+	rjmp		transmit_string_loop
+
+transmit_string_loop_end:
+	pop temp1
+	ret
