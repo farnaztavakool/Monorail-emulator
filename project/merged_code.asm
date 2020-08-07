@@ -314,7 +314,7 @@ number_of_stations:	.byte 1
 n_stations:			.byte	1
 
 emergency_stop:	.byte	1
-
+start_after_emergency:	.byte 1
 
 
 start_after_stop:			.byte	1
@@ -480,9 +480,10 @@ EXT_INT0:
 	in temp1, SREG
 	push temp1
 	
-	lds temp1, stop_flag
-	cpi temp1, 1 
-	breq emergency
+	
+	lds temp1, emergency_stop
+	cpi temp1 ,1 
+	breq start_after_emergency_stop
 
 	ldi temp1, 1
 	sts	stop_flag, temp1
@@ -495,12 +496,10 @@ EXT_INT0:
 	out PORTC, temp1
 	rjmp end_interrupt
 
-emergency:
-	ldi temp1, 1
-	sts emergency_stop, temp1
-
-
+start_after_emergency_stop:
 	
+	ldi temp1, 1 
+	sts start_after_emergency, temp1
 	
 end_interrupt:
 	pop temp1
@@ -512,13 +511,17 @@ end_interrupt:
 ;This interrupt will start the monorail
 EXT_INT1:
 
-		;rcall switch_delay
+		rcall switch_delay
+		rcall switch_delay
+
 		push temp1
 		in temp1, SREG
 		push temp1
 	
+	
+
 		ldi temp1, 1
-		sts	stop_flag, temp1
+		sts	emergency_stop, temp1
 	
 	
 		ser temp1
@@ -526,9 +529,11 @@ EXT_INT1:
 
 		ldi temp1, 0b11110000
 		out PORTC, temp1
+		rjmp endinterrupt
+
 
 	
-
+endinterrupt:
 		pop temp1
 		out SREG, temp1
 		pop temp1
@@ -600,8 +605,8 @@ decrease_second_left:
 
 	lds temp3, n_stations
 
-	;convert_digit_to_ascii temp1
-	;do_display_a_character temp1
+	convert_digit_to_ascii temp1
+	do_display_a_character temp1
 
 	;onvert_digit_to_ascii temp3
 	;o_display_a_character temp3
@@ -733,7 +738,7 @@ logic_main:
 	sts blink, temp1
 	sts start_after_stop, temp1
 	sts emergency_stop, temp1
-	
+	sts start_after_emergency, temp1
 
 	ldi temp1, 1
 	sts start_flag, temp1		;will set the flag when we need to start moving
@@ -905,14 +910,32 @@ stop_emergency:
 	do_display_a_character	temp1
 	ldi			temp1, 'N'
 	do_display_a_character	temp1
-	ldi			temp1, 'c'
+	ldi			temp1, 'C'
 	do_display_a_character	temp1
 	ldi			temp1, 'Y'
 	do_display_a_character	temp1
 	
 
 	rcall lower_duty_cycle_function
-	loop_inf: rjmp loop_inf
+	
+continue_after_emergency:
+
+	lds temp1, start_after_emergency
+	cpi temp1, 1 
+	brne continue_after_emergency
+
+	ldi temp1, 0
+	sts stop_flag, temp1
+	sts emergency_stop, temp1
+	sts continue_after_emergency, temp1
+
+	ldi temp1, ( 1<< TOIE2)
+	sts TIMSK2, temp1
+
+	ldi temp1, 0b1001010
+	out PORTC, temp1
+	rjmp halt
+
 
 find_station_travel_time:
 
