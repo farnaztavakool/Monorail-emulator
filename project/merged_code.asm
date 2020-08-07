@@ -534,9 +534,12 @@ Time2OVF:
 	push			temp2
 	push			temp3
 
+	clr temp1
+	out PORTC, temp1
+
 	lds temp1, wait_time			; check if we are waiting at a station 
 	cpi temp1, 0
-;	brne check_blink
+	brne check_blink
 
 second_time:
 	inc timer
@@ -560,7 +563,7 @@ second_time:
 do_wait: rjmp  wait_at_station
 do_end_second: rjmp end_second
 
-/**check_blink:
+check_blink:
 
 	lds temp1, blink
 	inc temp1
@@ -568,13 +571,13 @@ do_end_second: rjmp end_second
 
 	cpi temp1, 20
 	brne second_time
-	ldi temp1, 0b10101010
+	ldi temp1, 0b11001100
 	out PORTC, temp1
-	clr temp1
-	out PORTC, temp1
+	
+
 	clr temp1
 	sts blink, temp1
-	rjmp second_time**/
+	rjmp second_time
 
 decrease_second_left:
 
@@ -585,15 +588,15 @@ decrease_second_left:
 
 	lds temp3, n_stations
 
-	convert_digit_to_ascii temp1
-	do_display_a_character temp1
+	;convert_digit_to_ascii temp1
+	;do_display_a_character temp1
 
-	convert_digit_to_ascii temp3
-	do_display_a_character temp3
+	;onvert_digit_to_ascii temp3
+	;o_display_a_character temp3
 
-	lds temp1, curr_num_parameters	
-	convert_digit_to_ascii temp1
-	do_display_a_character temp1
+	;ds temp1, curr_num_parameters	
+	;convert_digit_to_ascii temp1
+	;do_display_a_character temp1
 
 	rjmp end_second
 	
@@ -605,12 +608,13 @@ wait_at_station:
 	sts wait_time, temp1
 	mov temp2, temp1
 
-	convert_digit_to_ascii temp2
-	do_display_a_character temp2
+	;convert_digit_to_ascii temp2
+	;do_display_a_character temp2
 
 	ldi temp2, 1
 	sts suspence, temp2
 
+	lds temp1, wait_time
 	cpi temp1, 0
 	brne end_second
 
@@ -650,7 +654,7 @@ lower_duty_cycle_function:
 	sts				OCR3BH, temp1								; OCR3B -= 2
 	sts				OCR3BL, temp1
 
-	ldi temp1, 0b10101010
+	;ldi temp1, 0b10101010
 	out PORTC, temp1
 	
 	
@@ -695,7 +699,7 @@ increase_duty_cycle_function_end:
 logic_main:
 
 
-	;jmp halt
+	
 	ldi temp1, 1
 	sts middle_flag, temp1
 	out DDRC, temp1
@@ -706,9 +710,10 @@ logic_main:
 	sts n_stations, temp1
 
 	rcall	find_station_travel_time
-	rcall display_station_name
+	rcall	display_station_name
 
 	ldi temp1, 0
+
 	sts stop_flag, temp1
 	sts	wait_at_station, temp1
 	sts wait_time, temp1	
@@ -720,7 +725,7 @@ logic_main:
 
 	ldi temp1, 1
 	sts start_flag, temp1		;will set the flag when we need to start moving
-	;rcall 	display_next_station
+	
 
 	jmp halt
 
@@ -732,10 +737,9 @@ halt:
 
 	ser temp1
 	out DDRC, temp1
-	out PORTC, temp1
+	;out PORTC, temp1
 	
-	ldi temp1, 1
-	sts start_flag, temp1	
+		
 one_loop:
 
 	lds temp1, curr_num_parameters	
@@ -753,16 +757,23 @@ check_suspence:
 	breq check_suspence
 
 check_start:
+
 	lds temp1, start_flag	; if we need to start moving
 	cpi temp1, 1
 	breq start_moving
 
-check_start_after_stop:
+check_start_after_stop:	
+
 	lds temp1, start_after_stop
 	cpi temp1, 1 
 	breq start_moving_again
 
-check_second_left:
+check_second_left:				; we only need to check the second_left if we are not stopped
+
+	;lds temp1, middle_flag
+	;cpi temp1, 1
+	;brne halt
+
 	lds temp1, second_left
 	cpi temp1, 0
 	breq do_we_stop
@@ -790,13 +801,13 @@ start_moving_again:
 
 	ldi temp1, 0
 	sts stop_flag, temp1
-
+	sts wait_time, temp1
 	;ld temp1, x+			;how long to the new station
 	;sts second_left, temp1
 	rcall increase_station
 	rcall find_station_travel_time
-
-	;ld temp1, y+
+	
+	rcall display_station_name
 	rcall increase_duty_cycle_function
 
 	ldi temp1, 1
