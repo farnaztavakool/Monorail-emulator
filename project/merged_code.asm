@@ -590,6 +590,11 @@ decrease_second_left:
 
 	convert_digit_to_ascii temp3
 	do_display_a_character temp3
+
+	lds temp1, curr_num_parameters	
+	convert_digit_to_ascii temp1
+	do_display_a_character temp1
+
 	rjmp end_second
 	
 wait_at_station:
@@ -734,12 +739,12 @@ halt:
 one_loop:
 
 	lds temp1, curr_num_parameters	
-	inc temp1
+	;inc temp1
 	;inc temp1
 
 	lds temp2, n_stations
 	cp temp1, temp2
-	;breq end_loop
+	breq end_loop
 
 check_suspence:
 
