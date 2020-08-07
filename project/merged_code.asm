@@ -536,7 +536,7 @@ Time2OVF:
 
 	lds temp1, wait_time			; check if we are waiting at a station 
 	cpi temp1, 0
-	brne check_blink
+;	brne check_blink
 
 second_time:
 	inc timer
@@ -560,7 +560,7 @@ second_time:
 do_wait: rjmp  wait_at_station
 do_end_second: rjmp end_second
 
-check_blink:
+/**check_blink:
 
 	lds temp1, blink
 	inc temp1
@@ -574,7 +574,7 @@ check_blink:
 	out PORTC, temp1
 	clr temp1
 	sts blink, temp1
-	rjmp second_time
+	rjmp second_time**/
 
 decrease_second_left:
 
@@ -645,6 +645,8 @@ lower_duty_cycle_function:
 	sts				OCR3BH, temp1								; OCR3B -= 2
 	sts				OCR3BL, temp1
 
+	ldi temp1, 0b10101010
+	out PORTC, temp1
 	
 	
 
@@ -703,7 +705,8 @@ logic_main:
 
 	ldi temp1, 0
 	sts stop_flag, temp1
-	sts	wait_at_station, temp1	
+	sts	wait_at_station, temp1
+	sts wait_time, temp1	
 	sts suspence, temp1
 	sts blink, temp1
 
@@ -808,6 +811,8 @@ start_moving_again:
 	
 
 do_we_stop:
+
+	
 
 	lds temp1, stop_flag
 	cpi temp1, 1
