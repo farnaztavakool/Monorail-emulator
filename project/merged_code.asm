@@ -709,6 +709,7 @@ logic_main:
 	sts wait_time, temp1	
 	sts suspence, temp1
 	sts blink, temp1
+	sts start_after_stop, temp1
 
 	
 
@@ -754,7 +755,7 @@ check_start:
 check_start_after_stop:
 	lds temp1, start_after_stop
 	cpi temp1, 1 
-;	breq start_moving_again
+	breq start_moving_again
 
 check_second_left:
 	lds temp1, second_left
