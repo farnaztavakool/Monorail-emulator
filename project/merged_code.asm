@@ -857,6 +857,7 @@ start_moving_again:
 	rcall increase_station
 	rcall find_station_travel_time
 	
+	clear_lcd_display
 	rcall display_station_name
 	rcall increase_duty_cycle_function
 
@@ -954,6 +955,7 @@ continue_after_emergency:
 	sts emergency_stop, temp1
 	sts continue_after_emergency, temp1
 
+	clear_lcd_display
 	ldi temp1, ( 1<< TOIE2)
 	sts TIMSK2, temp1
 
