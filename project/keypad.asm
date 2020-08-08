@@ -1360,6 +1360,10 @@ delay_three_half_seconds:
 
 
 
+.dseg 
+station_array:			.byte 21			; Temporary buffer to store input from USART
+								; Store 20 characters and null terminator
+
 .cseg
 station_prompt:			.db	'E','n','t','e','r',' ','s','t','a','t','i','o','n',':','\0'
 travel_time_prompt:		.db	'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':','\0'
@@ -1412,19 +1416,20 @@ check_station_name_character:
 	cpi		@0, 32		; Check against ASCII code for ' '
 	breq		Valid_input
 	cpi		@0, 65		; Anything else below 65 is not valid
-	brlt		Invalid_input
+	brlo		Invalid_input
 	cpi		@0, 91		; Within 'A - Z' range
-	brlt		Valid_input
+	brlo		Valid_input
 	cpi		@0, 97		; Between 91 nad 97 is invalid
-	brlt		Invalid_input
+	brlo		Invalid_input
 	cpi		@0, 123		; Within 'a - z' range
-	brlt		Valid_input
+	brlo		Valid_input
 
 Invalid_input:
 	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
 
 Valid_input:
 	ldi return_val_l, @0
+.endmacro
 
 .macro check_valid_time
 ; A function to check valid character for time input
@@ -1433,15 +1438,16 @@ check_time_input_character:
 	cpi		@0, 10		; Check for '\n'
 	breq		Valid_input
 	cpi		@0, 48		; Below 48 is not valid
-	brlt		Invalid_input
+	brlo		Invalid_input
 	cpi		@0, 58		; Within '0 - 9'
-	brlt		Valid_input
+	brlo		Valid_input
 
 Invalid_input:
 	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
 
 Valid_input:
 	ldi return_val_l, @0
+.endmacro
 
 
 
@@ -1456,18 +1462,19 @@ USART initiation:
 	lds		temp1, input_reading_stage
 
 check_input_parameter:
-	cpi		temp1, STATION_NAME_READING
+	cpi		temp1, STATION_NAME_READING				; 
 	breq		reading_STATION_NAME_input_start
 	cpi		temp1, TRAVEL_TIME_READING
-	breq		reading_TRAVEL_TIME_input
+	breq		reading_TRAVEL_TIME_input_start
 	cpi		temp1, DWELL_TIME_READING
-	breq		reading_DWELL_TIME_input
+	breq		reading_DWELL_TIME_input_start
 	cpi		temp1, FINISH_READING
 
 reading_STATION_NAME_input_start:
-	; initialise to write to station_array
-	set_y		station_prompt
+	set_x		station_array
+	set_z		station_prompt
 	rcall		transmit_string
+	sts		curr_station_name_num_characters, 0
 
 reading_STATION_NAME_input_loop:
 	USART_Receive	temp2
@@ -1477,15 +1484,20 @@ reading_STATION_NAME_input_loop:
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq		handle_wrong_input
 	st		x+, temp2
+	lds		temp3, curr_station_name_num_characters
+	inc		temp3
+	sts		curr_station_name_num_characters, temp3
+	cpi		temp3, 20
+	brsh		reading_STATION_NAME_input_end
 	rjmp		reading_STATION_NAME_input_loop
 
 reading_STATION_NAME_input_end:
 	st		x+, zero
+	rcall		store_station_name
 	rcall		change_input_reading_stage
 
 reading_TRAVEL_TIME_input_start:
-	; initialise to write to travel_array
-	set_y		travel_time_prompt
+	set_z		travel_time_prompt
 	rcall		transmit_string
 
 reading_TRAVEL_TIME_input_loop:
@@ -1495,15 +1507,16 @@ reading_TRAVEL_TIME_input_loop:
 	breq		reading_TRAVEL_TIME_input_loop_end
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq		handle_wrong_input
-	st		x+, temp2
+	sts		curr_input_time, temp2
+	call		update_curr_input_time
 	rjmp		reading_TRAVEL_TIME_input_loop_loop
 
 reading_TRAVEL_TIME_input_loop_end:
 	rcall		change_input_reading_stage
+	rcall		store_curr_input_time
 
 reading_DWELL_TIME_input_start:
-	; initialise to write to dwell_array
-	set_y		dwell_time_prompt
+	set_z		dwell_time_prompt
 	rcall		transmit_string
 
 reading_DWELL_TIME_input_loop:
@@ -1513,11 +1526,13 @@ reading_DWELL_TIME_input_loop:
 	breq		reading_DWELL_TIME_input_end
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq		handle_wrong_input
-	st		x+, temp2	
+	sts		curr_input_time, temp2	
+	call		update_curr_input_time
 	rjmp		reading_DWELL_TIME_input_loop
 
 reading_DWELL_TIME_input_end:
 	rcall		change_input_reading_stage
+	rcall		store_curr_input_time
 	rjmp		reading_STATION_NAME_input_start
 
 handling_wrong_input:
@@ -1530,7 +1545,7 @@ transmit_string:
 	push		temp1
 
 transmit_string_loop:
-	ld		temp1, y+
+	lpm		temp1, z+
 	cpi		temp1, 0
 	breq		tranmsit_string_end
 	USART_Transmit	temp1
@@ -1538,4 +1553,41 @@ transmit_string_loop:
 
 transmit_string_loop_end:
 	pop temp1
+	ret
+
+; A function to store station name in staion_array into station_name_array
+store_station_name:
+	push		temp1
+	push		temp2
+	push		temp3
+	push		xl
+	push		xh
+	push		yl
+	push		yh
+
+	set_x		station_name_array
+	set_y		station_name
+	lds		temp1, curr_num_parameters
+	ldi		temp2, STATION_NAME_SIZE
+	mul		temp1, temp2
+	mov		temp1, r0
+	mov		temp2, r1
+	add		xl, temp1
+	adc		xh, temp2
+
+store_name_loop:
+	ld		temp3, y+
+	st		x+, temp3
+	cpi		temp3, 0
+	breq		store_name_end
+	rjmp		stroe_name_loop
+
+store_name_end
+	pop		yh
+	pop		yl
+	pop		xh
+	pop		xl
+	pop		temp3
+	pop		temp2
+	pop		temp1
 	ret
