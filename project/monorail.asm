@@ -439,6 +439,7 @@ dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
 time_buffer:				.byte	5
 curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
 curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
+leftover_buffer:			.byte	20
 
 curr_station_index:			.byte	1					; a variable used to store the current station index
 
@@ -677,6 +678,7 @@ reading_STATION_NAME_input_start:
 
 reading_STATION_NAME_input_loop:
 	USART_Receive		temp2								; temp2 = new character from USART
+
 	check_valid_station	temp2								; check if the new character is valid or not
 	cpi			return_val_l, '\n'				
 	breq			reading_STATION_NAME_input_end					; if the new character == '\n', goto reading_STATION_NAME_input_end
@@ -804,7 +806,17 @@ reading_DWELL_TIME_input_end:
 handling_wrong_input:
 	set_y			wrong_input_data
 	rcall			transmit_string
+wrong_input_loop:
+	USART_Receive		temp2
+	set_x			leftover_buffer
+	st			x+, temp2
+	cpi			temp2, '\n'
+	breq			handle_wrong_input_check_input_parameter_longjump
+	rjmp			wrong_input_loop
+
+handle_wrong_input_check_input_parameter_longjump:
 	rjmp			check_input_parameter
+
 USART_initiation_end:
 	ret
 
