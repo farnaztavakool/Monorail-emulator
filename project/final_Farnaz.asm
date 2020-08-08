@@ -11,9 +11,6 @@
 
 .equ			MAXCHAR_DISPLAY = 16								; maximum character that can be contained on the lcd
 .equ			delay1ms = 1776
-.equ			OC3B_PIN = 0b00010000								; constants to initialize the PE4 (OC3B) pin
-.equ			waste_n = $FFFF										; constant to define the counter for switch_debouncing
-
 
 
 .equ			KEYPAD_INIT =	0b11110000							; mask to set PORTL 
@@ -47,38 +44,42 @@
 .equ			LCD_BE = 4									; constant for LCD
 .equ			BF_POSITION = 7									; constant that contains the busy flag bit position 
 
+.equ			FOSC = 16000000
+.equ			BAUD = 9600
+.equ			MYUBRR = (FOSC/16/BAUD-1)							; constants for the USART
+
+.equ			waste_n = $FFFF										; constant to define the counter for switch_debouncing
 
 .equ			one_second_num_interrupts = 977							; constant indicating how many time timer0 ovf 
 													; should occur before 1s has passed
+													
+.equ			OC3B_PIN = 0b00010000								; constants to initialize the PE4 (OC3B) pin
 
 .def			zero = r2
-.def			row = r3
-.def			col = r4
-
-.def			macro_r1 = r16
-.def			macro_r2 = r17
-
-.def			temp1 = r18
-.def			temp2 = r19
-.def			temp3 = r20
-.def			temp4 = r21
+.def			temp1 = r16
+.def			temp2 = r17
+.def			temp3 = r18
+.def			temp4 = r19									; registers for general use
+		
+.def			macro_r1 = r20
+.def			macro_r2 = r21									; registers used by macros
 
 .def			mask1 = r22
-							
-.def			timer = r23
-	; registers used for keypad
+.def			row = r3
+.def			col = r4									; registers used for keypad
 
 .def			return_val_l = r24
 .def			return_val_h = r25								; return__val_h:return_val_l as a return register
 
 
-////////////////////////////MACRO START////////////////////////////////////
+.def			timer = r23
+/////////////////////////////MACRO START////////////////////////////////////
 
+; macro to set x register points to @0
 .macro		set_x
 	ldi		xh, high(@0)
 	ldi		xl, low(@0)
 .endmacro
-
 
 ; macro to set y register points to @0
 .macro		set_y
@@ -95,8 +96,8 @@
 ; macro to set the DB7-DB0 in the lcd
 .macro		do_set_lcd_D_bits
 	ldi		macro_r1, @0
-	rcall		set_lcd_D_bits
-	rcall		lcd_wait
+	call		set_lcd_D_bits
+	call		lcd_wait
 .endmacro
 
 ; macro to set display an ascii character into lcd screen
@@ -115,14 +116,14 @@ if_no_shift_lcd_left:
 	inc		macro_r1
 	st		y, macro_r1
 	mov		macro_r1, @0
-	rcall		display_a_character
-	rcall		lcd_wait
+	call		display_a_character
+	call		lcd_wait
 	pop		yh
 	pop		yl
 .endmacro
 
 ; macro to get the current address of the pointer in the lcd and store it onto @0
-.macro		do_get_lcd_pointer_address
+.macro do_get_lcd_pointer_address
 	clr		macro_r1
 	out		DDRF, macro_r1							; set all port F as input to read the address counter
 	out		PORTF, macro_r1							; dismiss the pull-up resistor
@@ -147,7 +148,7 @@ if_no_shift_lcd_left:
 .endmacro
 
 ; macro to store @0 into the DD-RAM address counter of the LCD 
-.macro		do_store_lcd_pointer_address
+.macro do_store_lcd_pointer_address
 	sbr		@0, 0x80 							; ensure that the BF is set
 	out		PORTF, @0							; by defaulte LCD_RW, LCD_RS = 0, so we can immediately write @0 into the D0-7 register
 	lcd_ctrl_set	LCD_E
@@ -163,7 +164,7 @@ if_no_shift_lcd_left:
 .endmacro
 
 ; macro to decrements the lcd DD-RAM address counter by one. Note: it requires one extra register @0 and it changes the value
-.macro		decrement_lcd_pointer_address
+.macro decrement_lcd_pointer_address
 	
 	do_get_lcd_pointer_address	@0						; @0 contain the current pointer address in the LCD
 	dec				@0						; LCD pointer adddress--
@@ -242,14 +243,14 @@ find_character_according_row_col_end:
 .endmacro
 
 ; macro that start timer0 if input_reading_stage == STATION_NAME_READING, else stops the timer 0
-.macro		set_timer0_according_to_input_stage
+.macro set_timer0_according_to_input_stage
 	lds		macro_r1, input_reading_stage
 	cpi		macro_r1, STATION_NAME_READING
 	brne		stop_timer0
-	rcall		timer0_initialization
+	call		timer0_initialization
 	rjmp		set_timer0_according_to_input_stage_end
 stop_timer0:
-	rcall		timer0_stop
+	call		timer0_stop
 set_timer0_according_to_input_stage_end:
 .endmacro
 
@@ -258,6 +259,13 @@ set_timer0_according_to_input_stage_end:
 .macro		convert_digit_to_ascii
 	ldi		macro_r1, '0'
 	add		@0, macro_r1
+.endmacro
+
+; macro to conver a single ASCII DIGIT character in @0 into a number
+; ands store the result into @0
+.macro		convert_ascii_to_digit
+	ldi		macro_r1, '0'
+	sub		@0, macro_r1
 .endmacro
 
 ; macro that do @1 % @0, and store the value onto @1. Note: @0 is expected to be a constant
@@ -277,8 +285,115 @@ modulus_one_byte_by_loop_end:
 	sts			@0 + 1, zero		
 .endmacro
 
+; macro that remoes external interrupt flag
+; Note: @0 should contain the bit position of the external interrupt flag in EIFR
+.macro		remove_ext_int_flag
+	in			macro_r1, EIFR
+	ldi			macro_r2, (1 << @0)
+	com			macro_r2
+	and			macro_r1, macro_r2
+	out			EIFR, macro_r1						; clear the INTF1  bit in the EIFR register
+.endmacro
 
-////////////////////////////MACROS END////////////////////////////////////
+////////////////////////////////////////////////////////////////// USART macros//////////////////////////////////////////////////////////////////
+
+.macro USART_Init
+	ldi		macro_r1, high(MYUBRR)
+	sts		UBRR0H, macro_r1
+	ldi		macro_r1, low(MYUBRR)
+	sts		UBRR0L, macro_r1							; set up the baud rate on the board
+
+	ldi		macro_r1, (1<< TXEN0| 1 <<RXEN0)
+	sts		UCSR0B, macro_r1							; enable transmitter and receiver
+
+	ldi		macro_r1, (1<< USBS0|3 <<UCSZ00)					; set frame structure. 8 data bit and 2 stop bit
+	sts		UCSR0C, macro_r1
+.endmacro
+
+.macro USART_Transmit
+	;Wait for empty transmit buffer
+USART_Transmit_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, UDRE0
+	rjmp		USART_Transmit_loop							; if USART0 data register is empty, put the data into the buffer
+
+	sts		UDR0, @0
+
+.endmacro
+
+.macro USART_Receive
+USART_Receiver_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, RXC0
+	rjmp		USART_Receiver_loop							; if USART0 data register is empty, put the data into the buffer
+
+	lds		@0, UDR0
+.endmacro
+
+; A macro to check that correct character for station names is input
+; Only 'A - Z', 'a - z', ' ', or '\n' is valid
+.macro check_valid_station
+
+check_station_name_character:
+	cpi		@0, '\n'								; Check against ASCII code for '\n'
+	breq		check_valid_station_valid_input
+	cpi		@0, ' '									; Check against ASCII code for ' '
+	breq		check_valid_station_valid_input
+	cpi		@0, 'A'									; Anything else below 65 is not valid
+	brlt		check_valid_station_invalid_input
+	cpi		@0, 'Z'	+ 1								; Within 'A - Z' range
+	brlt		check_valid_station_valid_input
+	cpi		@0, 'a'									; Between 91 nad 97 is invalid
+	brlt		check_valid_station_invalid_input
+	cpi		@0, 'z' + 1								; Within 'a - z' range
+	brlt		check_valid_station_valid_input
+
+check_valid_station_invalid_input:
+	ldi		return_val_l, UNKNOWN_CHARACTER_PRESSED
+	rjmp		check_valid_station_end
+check_valid_station_valid_input:
+	mov		return_val_l, @0
+check_valid_station_end:
+.endmacro
+
+
+
+; macro to check valid character for time input
+; Only '0-9', '\n'
+.macro check_valid_time
+check_time_input_character:
+	cpi		@0, '\n'								; Check for '\n'
+	breq		check_valid_time_valid_input
+	cpi		@0, '0'									; Below 48 is not valid
+	brlt		check_valid_time_invalid_input
+	cpi		@0, '9' + 1								; Within '0 - 9'
+	brlt		check_valid_time_valid_input
+
+check_valid_time_invalid_input:
+	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+	rjmp		check_valid_time_end
+check_valid_time_valid_input:
+	mov		 return_val_l, @0
+check_valid_time_end:
+.endmacro
+
+; macro to move string from @0 (a program memory address) to @1 (a data memory address)
+; this assumes the data memory is big enough to store the string
+.macro move_string_program_to_data
+	set_z	@0
+	set_x	@1
+move_string_loop:
+	lpm		macro_r1, z+
+	cpi		macro_r1, 0
+	breq	move_string_loop_end
+	st		x+, macro_r1								; a loop that keep moving characters from @0 to @1 until
+														; it reaches null terminator and break out of the loop
+	rjmp	move_string_loop
+move_string_loop_end:
+	st		x+, macro_r1								; put the null terminator too
+
+.endmacro
+/////////////////////////////////MACRO END//////////////////////////////////////
 
 .dseg
 
@@ -286,6 +401,13 @@ modulus_one_byte_by_loop_end:
 
 		
 .org					0x200
+
+
+station_prompt_data:			.byte	15
+travel_time_prompt_data:		.byte	20
+dwell_time_prompt_data:			.byte	20
+wrong_input_data:			.byte	25
+finish_string_data:			.byte	7					; am array that will be containing the variable "finish"
 
 current_lcd_pointer_pos:		.byte	1
 
@@ -299,7 +421,10 @@ input_reading_stage:			.byte	1					; a variable to keep track in which stage of 
 
 curr_input_time:			.byte	1					; a variable to store the time being input from the keypad
 
-station_name_array:			.byte	21 * 20					; a 2d array that can store 20 string each of size 20 (excluding null terminator)
+station_name_array:			.byte	21 * 21					; a 2d array that can store 20 string each of size 20 (excluding null terminator)
+											; Note: in manual, it only store 20 station name. The extra slot is by USART to input
+											; check. Refer to the function "USART_initiation" for more info
+
 travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
 dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
 curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
@@ -370,9 +495,9 @@ lcd_initialization:
 	out			PORTA, temp1				
 
 	do_set_lcd_D_bits	0b00110000
-	rcall			wait_5ms
+	call			wait_5ms
 	do_set_lcd_D_bits	0b00110000
-	rcall			wait_1ms
+	call			wait_1ms
 	do_set_lcd_D_bits	0b00110000
 	do_set_lcd_D_bits	0b00111100						; 8 bits transfer, 2 no of line, and font '1'
 	do_set_lcd_D_bits	0b00001000						; display OFF
@@ -380,28 +505,45 @@ lcd_initialization:
 	do_set_lcd_D_bits	0b00000110						; incremental mode without screen shifting
 	do_set_lcd_D_bits	0b00001110						; display cursor and no blink
 
-keypad_initialization:
-	ldi			temp1, KEYPAD_INIT
-	sts			DDRL, temp1						; set R0-R3 as input, C0-C3 as output
+																			
+decide_input_platform:
+	rcall			display_input_choice					; a function that display "PB0/PB1-USART/KEYPAD"
 
-	ldi			temp1, KEYPAD_NOT_PRESSED 
+	clr			temp1
+	out			DDRD, temp1						; set PIND as all input
+	ser			temp2
+	out			PORTD, temp2						; set the pull up resistor for all of PIND
+decide_input_platform_loop_start:
+	in			temp1, PIND						; temp1 = current PIND state
+	ldi			temp2, 0x01						
+	and			temp1, temp2						; temp1 = current PIND state & 0x01
+	cpi			temp1, 0
+	breq			if_USART_case						; if PB0 is pressed, goto if_USART_case
 
-	sts			prev_row, temp1
-	sts			prev_col, temp1
-	sts			last_typed_character, temp1				; set prev_row, prev_col and last_typed_character as the constant
-											; KEYPAD_NOT_PRESSED to indicate that there are no key pressed yet
+	in			temp1, PIND						; temp1 = current PIND state
+	ldi			temp2, 0x02						
+	and			temp1, temp2						; temp1 = current PIND state & 0x02
+	cpi			temp1, 0
+	breq			if_keypad_case						; if PB1 is pressed, goto if_keypad_case
 
-	;ser			temp1
-	;out			PORTF, temp1						;  enable R0-R3 pull up resistor. Open all C0-C3 switch
 
-	ldi			temp1, STATION_NAME_READING
-	sts			input_reading_stage, temp1				; input_reading_stage = STATION_NAME_READING
+	rjmp			decide_input_platform_loop_start			; go read PB0/PB1 until one of them is clicked
 
-	sts			curr_num_parameters, zero				; curr_num_parameters = 0
-	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
+if_keypad_case:
+	clear_lcd_display
+	rcall			read_input_through_keypad
 
-	;rcall			timer0_initialization	
+	rjmp			main_monorail
 
+if_USART_case:
+	clear_lcd_display
+	rcall			USART_initiation
+	rjmp			main_monorail
+	
+main_monorail:
+	remove_ext_int_flag	INTF0
+	remove_ext_int_flag	INTF1							; clear the external INT0&1 interrupt flag caused by PB0/1 being click
+	
 external_interrupt_initialization:
 	clr			temp1
 	out			DDRD, temp1							; set PORTD as all input
@@ -414,24 +556,6 @@ external_interrupt_initialization:
 	ori			temp1, (0<<INT2|1<<INT1|1<<INT0)	
 	out			EIMSK, temp1						; enable INT2, 1 and 0
 
-
-timer0_initialization:
-	push			temp1
-	
-	sts			num_timer0_ovf, zero
-	sts			num_timer0_ovf + 1, zero				; num_timer0_ovf = 0
-
-	clr			temp1
-	out			TCCR0A, temp1						; NOTE: TCCRnA is the control register for Timern
-
-	ldi			temp1, 0b00000011																
-	out			TCCR0B, temp1						; pre-scaler value is 64 (the cycle for timer0 runs 64 slower)
-
-	lds			temp1, TIMSK0
-	ori			temp1, (1 << TOIE0)					; POSSIBLE PROBLEM
-	sts			TIMSK0, temp1						; enable Timer0 overflow interrupt
-	pop			temp1
-	
 timer2_initilization:
 
 	clr			temp1
@@ -457,21 +581,695 @@ pwm_timer3B_initialization:
 
 	ldi			temp1,  (1<<COM3B1|1<<WGM30)
 	sts			TCCR3A, temp1						; set OC3B to be phase correct (non-inverting mode), 8 bit top (0xFFFF), and
-	sei
+	sei				
+
+;the function will set the paramethers for the motor
+;if will implement the logics for the motor
+
+logic_main:
+	
+	ldi			temp1, 1
+	sts			middle_flag, temp1
+	out			DDRC, temp1
+	
+	ldi			temp1, 0
+	sts			n_stations, temp1
+
+	rcall			find_station_travel_time
+	rcall			display_station_name
+
+	ldi			temp1, 0
+
+	sts			stop_flag, temp1		;flag indicating if the train in moving
+	sts			wait_at_station, temp1		;flag indicating when the train is waiting at a station
+	sts			wait_time, temp1		;indicating the waiting time for the current station
+	sts			suspence, temp1			;indicating when there is no need for any logic implementation 
+	sts			blink, temp1			;timer for 3Hz blink
+	sts			start_after_stop, temp1		;indicating the train is starting after stopping at a station 
+	sts			emergency_stop, temp1		;indicating emergency stop at a station 
+	sts			start_after_emergency, temp1	;indicating when the train is starting after emergency stop
+
+	ldi			temp1, 1
+	sts			start_flag, temp1		;will set the flag when we need to start moving
+	
+
+	jmp			halt
 
 
-																					
-rjmp	keypad_main					; loop infinitely
+; logic implementation for the train 
+halt:
 
+	ldi			temp1, (1 << TOIE2)		;start timer2
+	sts			TIMSK2, temp1
+
+	ser			temp1
+	out			DDRC, temp1
+	
+	
+; checks if we are in the last station 	
+one_loop:
+
+	lds			temp1, curr_num_parameters	
+	lds			temp2, n_stations
+	cp			temp1, temp2
+	breq			end_loop
+
+; checks if there is an emergency
+check_emeregency:
+
+	lds			temp1, emergency_stop
+	cpi			temp1, 1
+	breq			do_stop_emergency
+
+; checks if there is no need of any logic implementation 
+check_suspence:
+
+	lds			temp1, suspence
+	cpi			temp1, 1
+	breq			check_suspence
+
+; checks if the train has to start moving
+check_start:
+
+	lds			temp1, start_flag	; if we need to start moving
+	cpi			temp1, 1
+	breq			start_moving
+
+;checl if we are moving after we stopped in a station 
+check_start_after_stop:	
+
+	lds			temp1, start_after_stop
+	cpi			temp1, 1 
+	breq			start_moving_again
+
+
+
+; checks how long is left to the next station 
+check_second_left:				
+
+
+	lds			temp1, second_left
+	cpi			temp1, 3		;checks to display the name of the next station 
+	breq			do_show_next_station
+
+	lds			temp1, second_left
+	cpi			temp1, 0
+	breq			do_we_stop
+
+
+; infinite loop  
+	rjmp			halt
+
+; does the logic part for showing the name of the next station 
+do_show_next_station: 
+
+	lds			temp1, curr_num_parameters	
+	lds			temp2, n_stations
+
+	inc			temp2
+	cp			temp1, temp2
+	breq			halt
+
+	rcall			display_next_station_name
+	rjmp			halt
+
+
+do_stop_emergency:		rjmp stop_emergency
+
+; will stop the emulator and reset the paramethers to loop 
+end_loop: 
+
+	rcall			lower_duty_cycle_function
+	ldi			temp1, ( 0<< TOIE2)
+	sts			TIMSK2, temp1
+
+
+	
+	rcall			last_stop
+
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+	call			switch_delay
+
+	clear_lcd_display
+	rjmp			logic_main
+	;rjmp end_loop
+
+; start the motor 
+start_moving:
+
+	 
+	rcall			increase_duty_cycle_function
+	rjmp			check_second_left
+
+
+; start moving after stopping at a station 
+start_moving_again:
+	
+
+	ldi			temp1, 0
+	sts			stop_flag, temp1
+	sts			wait_time, temp1
+	
+	rcall			increase_station
+	rcall			find_station_travel_time
+	
+	
+	rcall			increase_duty_cycle_function
+
+	ldi			temp1, 1
+	sts			middle_flag, temp1
+
+	ldi			temp1, 0
+	sts			start_after_stop, temp1
+	ldi			temp1, 1
+	sts			start_flag, temp1	
+
+	
+
+	rjmp			halt
+
+	
+; checks if we need to stop at the next station 
+do_we_stop:
+
+	
+
+	lds			temp1, stop_flag
+	cpi			temp1, 1
+	brne			new_station
+
+			;stop the motor
+	ldi			temp1, 0
+	sts			middle_flag, temp1				;empty the middle flag
+	sts			start_flag, temp1			;empty the start flag
+
+	rcall			lower_duty_cycle_function
+	rcall			find_stop_time
+
+	clear_lcd_display
+	rcall			increase_station
+	rcall			display_station_name
+
+	lds			temp1, n_stations
+	dec			temp1
+	sts			n_stations, temp1
+	
+	
+		
+
+	rjmp			halt
+	 				
+; sets the parametheres and will go to the next station 
+new_station:
+
+	rcall			increase_station
+	rcall			find_station_travel_time
+	clear_lcd_display
+
+	rcall			display_station_name
+	rjmp			halt
+
+; incrase the numeber of the stations we have visited	
+increase_station:
+
+	lds			temp1, n_stations
+	inc			temp1
+	sts			n_stations, temp1
+	ret
+
+; will stop the motor in case of emergency
+stop_emergency:
+
+	ldi			temp1, ( 0<< TOIE2)			;stop timer2
+	sts			TIMSK2, temp1
+
+	clear_lcd_display
+
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'M'
+	do_display_a_character	temp1
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'R'
+	do_display_a_character	temp1
+	ldi			temp1, 'G'
+	do_display_a_character	temp1
+	ldi			temp1, 'E'
+	do_display_a_character	temp1
+	ldi			temp1, 'N'
+	do_display_a_character	temp1
+	ldi			temp1, 'C'
+	do_display_a_character	temp1
+	ldi			temp1, 'Y'
+	do_display_a_character	temp1
+	
+
+	rcall			lower_duty_cycle_function
+
+;starts the motor after emergency	
+continue_after_emergency:
+
+	lds			temp1, start_after_emergency
+	cpi			temp1, 1 
+	brne			continue_after_emergency
+
+	ldi			temp1, 0
+	sts			stop_flag, temp1
+	sts			emergency_stop, temp1
+	sts			continue_after_emergency, temp1
+
+	clear_lcd_display
+	rcall			display_station_name
+	ldi			temp1, ( 1<< TOIE2)
+	sts			TIMSK2, temp1
+
+	
+	rjmp			halt
+
+
+
+; A function that reads all the inputs for the monorail from the keypad
+; Note: this function don't save any register (treat is as another main function).
+read_input_through_keypad:
+
+keypad_initialization:
+	ldi			temp1, KEYPAD_INIT
+	sts			DDRL, temp1						; set R0-R3 as input, C0-C3 as output
+
+	ldi			temp1, KEYPAD_NOT_PRESSED 
+
+	sts			prev_row, temp1
+	sts			prev_col, temp1
+	sts			last_typed_character, temp1				; set prev_row, prev_col and last_typed_character as the constant
+											; KEYPAD_NOT_PRESSED to indicate that there are no key pressed yet
+
+	;ser			temp1
+	;out			PORTF, temp1						;  enable R0-R3 pull up resistor. Open all C0-C3 switch
+
+	ldi			temp1, STATION_NAME_READING
+	sts			input_reading_stage, temp1				; input_reading_stage = STATION_NAME_READING
+
+	sts			curr_num_parameters, zero				; curr_num_parameters = 0
+	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
+
+	call			timer0_initialization					; turn on timer0 with pre-scaler of 64
+
+	sei										; enable global interrupt (mainly for timer0OVF currently)
+main_reading_input:
+	clr			col
+	ldi			mask1, COLMASK_INIT					; mask = 0b11101111
+col_loop:
+	sts			PORTL, mask1
+	call			delay
+	lds			temp1, PINL						; read the state of current column
+	andi			temp1, ROWMASK						; temp1 &= 0b00001111
+	cpi			temp1, ROWMASK
+	breq			no_switch_pressed					; if temp1 &= 0b00001111 != ROW_MASK, goto no_switch_pressed
+											; else, a key is pressed, search for it 
+	clr			row							; row = 0
+	ldi			mask1, ROWMASK_INIT					; mask = 0b00000001
+row_loop:
+	mov			temp2, temp1						; temp2 = the state of current column
+	and			temp2, mask1						
+	cpi			temp2, 0
+	brne			continue_scanning_row					; if temp2 & mask != 0, goto continue_scanning_row
+											; else we found the key pressed,
+
+	lds			temp1, input_reading_stage
+
+	cpi			temp1, STATION_NAME_READING
+	brne			display_time_character					; if input_reading_stage != STATION_TIME_READING, goto display_time_character
+											; else, display_station_name_character
+display_station_name_character:
+	cli										; clear global interrupt bit
+	rcall			display_pressed_character_station_name			; display the pressed character onto LCD
+
+	in			temp1, TIFR0
+	cbr			temp1, 0x01
+	out			TIFR0, temp1						; clear the timer0 ovf interrupt flag (not having this is okay, since it only affects
+											; 1 counter increment in num_timer0_ovf)
+
+	sei										; NOTE: it is important to make sure display_pressed_character_station_name won't be interrupted
+											; by timer0 overflow
+	
+	rjmp			display_pressed_character_finished
+display_time_character:
+	rcall			display_pressed_digit_time			
+	rjmp			display_pressed_character_finished
+display_pressed_character_finished:
+	call			switch_delay						; delay for approx 0.124sec
+	cpi			return_val_l, ENTER_PRESSED
+	breq			main_reading_input_end					; if the "ENTER" key is pressed, break out the current stage input reading and
+											; move on to reading the next sgae
+
+	cpi			return_val_l, BACKSPACE_PRESSED
+	breq			jump_back_to_main_reading_input				; if the "BACKSPACE" key is pressed, continue scanning the next character
+
+	cpi			return_val_l, ASTERISK_PRESSED
+	breq			relative_branch_asterisk_resolve			; if the "ASTERISK" key is pressed, break out of the entire reading stage
+											; and move on to the next stage of simulating the railway
+	rjmp			relative_branch_asterisk_not_needed
+relative_branch_asterisk_resolve:
+	rjmp			input_reading_finish
+relative_branch_asterisk_not_needed:
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	breq			if_station_name_input_stage				; if input_reading_stage == STATION_NAME_READING , goto if_station_name_input_stage
+											; (which means reads the next character being input for the current station name)
+	; If we arrive at this point, result_val_l will contain the number 0-9 which we need to store onto curr_input_time
+	mov			temp1, return_val_l					; temp1 = return value of display_pressed_digit_time (between 0-9)
+	rcall			update_curr_input_time					; update the curr_input_time according to the current return_val_l value
+	rjmp			jump_back_to_main_reading_input
+if_station_name_input_stage:
+	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq			jump_back_to_main_reading_input				; if return_val_l == UNKNOWN_PRESSED_CHARACTER, goto jump_back_to_main_reading_input
+
+	mov			temp1, return_val_l					; return_val_l = last_typed_character
+	rcall			store_curr_character_station_name			; otherwise, it is a valid character, store it onto the current station name array
+
+	lds			temp1, curr_station_name_num_characters
+	inc			temp1
+	sts			curr_station_name_num_characters, temp1			; curr_station_name_num_characters++
+	
+jump_back_to_main_reading_input:
+	rjmp			main_reading_input					; continue scanning new pressed key
+
+continue_scanning_row:
+	inc			row							; row++
+	lsl			mask1							; mask1 << 1
+	rjmp			row_loop						; goto row_loop	
+	
+	
+no_switch_pressed:
+	rol			mask1							; update mask1
+	inc			col							; col++
+	ldi			temp3, 4						; temp3 = 4
+	cp			col, temp3
+	breq			relative_branch_resolve_main_reading_input		; if col == 4, goto main
+	rjmp			relative_branch_resolve_main_reading_input_not_needed
+relative_branch_resolve_main_reading_input:
+	rjmp			main_reading_input
+relative_branch_resolve_main_reading_input_not_needed:
+	rjmp			col_loop						; else, goto col_loop
+main_reading_input_end:
+	clear_lcd_display								; clear the display to read the next input
+	
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	breq			insert_null_terminator_station_name			; if input_reading_stage == NAME_STATION_READING, goto change_input_stage
+	rcall			store_curr_input_time					; otherwise, store curr_input_time to either travel/dwell array
+	rjmp			change_input_stage
+insert_null_terminator_station_name:
+	ldi			temp1, '\0'
+	rcall			store_curr_character_station_name			; insert '\0' to the index right after the last character in the current statio name array
+	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
+change_input_stage:
+	call			change_input_reading_stage				; call change_input_reading_stage to change input_reading_stage variable accordingly
+
+	lds			temp1, input_reading_stage
+	cpi			temp1, STATION_NAME_READING
+	brne			check_if_curr_input_time_need_reset			; if the new input_reading_stage != STATION_NAME_READING, goto check_if_curr_input_time_need_reset
+
+	lds			temp1, curr_num_parameters				; otherwise, curr_num_parameters++
+	inc			temp1
+	sts			curr_num_parameters, temp1
+
+check_if_curr_input_time_need_reset:
+	lds			temp1, input_reading_stage				
+	cpi			temp1, STATION_NAME_READING				
+	breq			update_timer0_state					; if the new input_reading_stage == STATION_NAME_READING, goto update_input_stage
+	sts			curr_input_time, zero					; otherwise, clear curr_input_time
+update_timer0_state:			
+	cli
+	set_timer0_according_to_input_stage						; macro that stops timer0 if input reading stage != STATION_NAME_READING, else it initialize it
+	sei										; NOTE: this macro shouldn't be interrupted by timer0 (since it is changing the state of it)
+	rjmp			main_reading_input
+input_reading_finish:									; input reading finish at this point
+	clear_lcd_display
+	;rcall			display_all_arrays					; IF_DEBUG
+	call			delay_three_half_seconds				; allow timer0 to stabilize
+	cli
+	call			timer0_stop						; stops timer0 overflow interrupt
+	sei	
+
+	ret
+
+; A function that display "PB0/1-USART/KEY"
+; Registers: temp1
+; Arguments: -
+; Returns: -
+display_input_choice:
+	push			temp1
+	ldi			temp1, 'P'
+	do_display_a_character	temp1
+	ldi			temp1, 'B'
+	do_display_a_character	temp1
+	ldi			temp1, '0'
+	do_display_a_character	temp1
+	ldi			temp1, '/'
+	do_display_a_character	temp1
+	ldi			temp1, '1'
+	do_display_a_character	temp1
+	ldi			temp1, '-'
+	do_display_a_character	temp1
+	ldi			temp1, 'U'
+	do_display_a_character	temp1
+	ldi			temp1, 'S'
+	do_display_a_character	temp1
+	ldi			temp1, 'A'
+	do_display_a_character	temp1
+	ldi			temp1, 'R'						; display "Time exceeded 255" onto the lcd
+	do_display_a_character	temp1
+	ldi			temp1, 'T'
+	do_display_a_character  temp1
+	ldi			temp1, '/'
+	do_display_a_character  temp1
+	ldi			temp1, 'K'
+	do_display_a_character  temp1
+	ldi			temp1, 'E'
+	do_display_a_character  temp1
+	ldi			temp1, 'Y'
+	do_display_a_character  temp1
+
+	pop			temp1
+	ret	
+
+
+; A function that reads all the input for the monorail from USART (local host)
+; Note: this function don't save any register (treat is as another main function).
+USART_initiation:
+	
+station_prompt:			.db	'E','n','t','e','r',' ','s','t','a','t','i','o','n',':','\0', '\0'
+travel_time_prompt:		.db	'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':','\0', '\0'
+dwell_time_prompt:		.db	'E','n','t','e','r',' ','d','w','e','l','l',' ','t','i','m','e',':','\0'
+wrong_input:			.db	'I','n','v','a','l','i','d',' ','i','n','p','u','t',' ','d','e','t','e','c','t','e','d','\0', '\0'
+finish_string:			.db	'f','i','n','i','s','h','\0','\0'
+
+
+	move_string_program_to_data	station_prompt, station_prompt_data
+	move_string_program_to_data	travel_time_prompt, travel_time_prompt_data
+	move_string_program_to_data	dwell_time_prompt, dwell_time_prompt_data
+	move_string_program_to_data	wrong_input, wrong_input_data
+	move_string_program_to_data	finish_string, finish_string_data
+
+	USART_Init
+	ldi			temp1, STATION_NAME_READING
+	sts			input_reading_stage, temp1					; initially, start with input_reading_stage = STATION_NAME_READING
+	
+	sts			curr_num_parameters, zero					; curr_num_parameters = 0
+
+check_input_parameter:
+	lds			temp1, input_reading_stage
+
+	cpi			temp1, STATION_NAME_READING
+	breq			reading_STATION_NAME_input_start				; if input_reading_stage == STATION_NAME_READING, goto reading_STATION_NAME_input_start
+
+	cpi			temp1, TRAVEL_TIME_READING
+	breq			reading_TRAVEL_TIME_input_start					; if input_reading_stage == TRAVEL_TIME_READING, goto reading_TRAVEL_TIME_input_start
+
+	cpi			temp1, DWELL_TIME_READING
+	breq			reading_DWELL_TIME_input_start_relative_branch_resolve		; if input_reading_stage == DWELL_TIME_READING, goto reading_DWELL_TIME_input_start
+	; The code won't reach here
+
+reading_DWELL_TIME_input_start_relative_branch_resolve:
+	rjmp			reading_DWELL_TIME_input_start
+
+reading_STATION_NAME_input_start:
+	; initialise to write to station_array
+	set_y			station_prompt_data
+	rcall			transmit_string		
+	
+	lds			temp1, curr_num_parameters
+	ldi			temp2, STATION_NAME_SIZE
+	mul			temp1, temp2
+	
+	set_x			station_name_array
+	
+	add			xl, r0
+	adc			xh, r1								; x = &station_name_array[curr_num_parameters]				
+
+reading_STATION_NAME_input_loop:
+	USART_Receive		temp2								; temp2 = new character from USART
+	check_valid_station	temp2								; check if the new character is valid or not
+	cpi			return_val_l, '\n'				
+	breq			reading_STATION_NAME_input_end					; if the new character == '\n', goto reading_STATION_NAME_input_end
+	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq			handling_wrong_input_branch_resolve1				
+	rjmp			handling_wrong_input_branch_resolve1_not_needed
+handling_wrong_input_branch_resolve1:
+	rjmp			handling_wrong_input
+handling_wrong_input_branch_resolve1_not_needed:
+	st			x+, temp2
+	rjmp			reading_STATION_NAME_input_loop
+
+reading_STATION_NAME_input_end:
+	st			x+, zero
+
+	lds			temp1, curr_num_parameters
+	ldi			temp2, STATION_NAME_SIZE
+	mul			temp1, temp2
+	
+	set_x			station_name_array
+	
+	add			xl, r0
+	adc			xh, r1								; x = &station_name_array[curr_num_parameters]	
+
+	set_y			finish_string_data
+	call			strcmp								; compare the newly input string with "finish" string
+	cpi			return_val_h, 0
+	breq			USART_initiation_end_branch_resolve1				; if newly input string == "finish", goto USART_initiation_end
+	rjmp			USART_initiation_end_branch_resolve1_not_needed
+USART_initiation_end_branch_resolve1:
+	rjmp			USART_initiation_end
+USART_initiation_end_branch_resolve1_not_needed:
+	; TODO: check if "finish" is entered		
+	call			change_input_reading_stage
+	rjmp			check_input_parameter
+
+reading_TRAVEL_TIME_input_start:
+	; initialise to write to travel_array
+	set_y			travel_time_prompt_data
+	rcall			transmit_string
+
+	sts			curr_input_time, zero						; curr_input_time =  0
+reading_TRAVEL_TIME_input_loop:
+	USART_Receive		temp2
+	check_valid_time	temp2
+	cpi			return_val_l, '\n'
+	breq			reading_TRAVEL_TIME_input_loop_end
+	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq			handling_wrong_input_branch_resolve2			
+	rjmp			handling_wrong_input_branch_resolve2_not_needed
+handling_wrong_input_branch_resolve2:
+	rjmp			handling_wrong_input
+handling_wrong_input_branch_resolve2_not_needed:
+
+	lds			temp1, curr_input_time
+	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
+	ldi			temp3, 10
+
+	mul			temp1, temp3
+	mov			temp1, r0
+	; TODO; check overflow
+	add			temp1, temp2
+	sts			curr_input_time, temp1						; curr_input_time = curr_input_time * 10 + new digit
+	rjmp			reading_TRAVEL_TIME_input_loop
+
+reading_TRAVEL_TIME_input_loop_end:
+	lds			temp1, curr_num_parameters
+	set_x			travel_time_array
+
+	add			xl, temp1
+	adc			xh, zero							; x = &travel_time_array[curr_num_parameters]
+
+	lds			temp1, curr_input_time
+	st			x, temp1							; travel_time_array[curr_num_parameters] = curr_input_time
+	call			change_input_reading_stage
+	rjmp			check_input_parameter
+
+reading_DWELL_TIME_input_start:
+	; initialise to write to dwell_array
+	set_y			dwell_time_prompt_data
+	rcall			transmit_string
+
+	sts			curr_input_time, zero						; curr_input_time =  0
+
+reading_DWELL_TIME_input_loop:
+	USART_Receive		temp2
+	check_valid_time	temp2
+	cpi			return_val_l, '\n'
+
+	breq			reading_DWELL_TIME_input_end
+	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
+	breq			handling_wrong_input
+
+	lds			temp1, curr_input_time
+	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
+	ldi			temp3, 10
+
+	mul			temp1, temp3
+	mov			temp1, r0
+	; TODO; check overflow
+	add			temp1, temp2
+	sts			curr_input_time, temp1						; curr_input_time = curr_input_time * 10 + new digit
+
+	rjmp			reading_DWELL_TIME_input_loop
+
+reading_DWELL_TIME_input_end:
+	lds			temp1, curr_num_parameters
+	set_x			dwell_time_array
+
+	add			xl, temp1
+	adc			xh, zero
+
+	lds			temp1, curr_input_time
+	st			x, temp1							; travel_time_array[curr_num_parameters] = curr_input_time
+	call			change_input_reading_stage
+
+	lds			temp1, curr_num_parameters
+	inc			temp1
+	sts			curr_num_parameters, temp1
+	rjmp			reading_STATION_NAME_input_start
+
+handling_wrong_input:
+	set_y			wrong_input_data
+	rcall			transmit_string
+	rjmp			check_input_parameter
+USART_initiation_end:
+	ret
+
+
+; A function to display string on USART
+transmit_string:
+	push			temp1
+
+transmit_string_loop:
+	ld			temp1, y+
+	cpi			temp1, 0
+	breq			transmit_string_loop_end
+	USART_Transmit		temp1
+	rjmp			transmit_string_loop
+transmit_string_loop_end:
+	ldi			temp1, '\n'
+	USART_Transmit		temp1
+	pop			temp1
+	ret
 
 ; when passenger needs to get on/off or when want to start after emergency stop
 EXT_INT0:
-
-	rcall			switch_delay
-
 	push			temp1
 	in			temp1, SREG
 	push			temp1
+
+	rcall			switch_delay
+
 	
 	
 	lds			temp1, emergency_stop
@@ -514,13 +1312,14 @@ end_interrupt:
 
 ;This interrupt is for emergency stop
 EXT_INT1:
-
-	rcall			switch_delay
-	rcall			switch_delay
-
 	push			temp1
 	in			temp1, SREG
 	push			temp1
+
+	rcall			switch_delay
+	rcall			switch_delay
+
+	
 	
 	
 
@@ -554,7 +1353,7 @@ endinterrupt:
 Time2OVF:
 	
 	push			temp1
-	in				temp1, SREG
+	in			temp1, SREG
 	push			temp1
 	push			temp2
 	push			temp3
@@ -697,279 +1496,6 @@ increase_duty_cycle_function_end:
 	pop			temp2
 	pop			temp1
 	ret
-
-
-
-
-;the function will set the paramethers for the motor
-;if will implement the logics for the motor
-
-logic_main:
-	
-	ldi			temp1, 1
-	sts			middle_flag, temp1
-	out			DDRC, temp1
-	
-	ldi			temp1, 0
-	sts			n_stations, temp1
-
-	rcall			find_station_travel_time
-	rcall			display_station_name
-
-	ldi			temp1, 0
-
-	sts			stop_flag, temp1		;flag indicating if the train in moving
-	sts			wait_at_station, temp1		;flag indicating when the train is waiting at a station
-	sts			wait_time, temp1		;indicating the waiting time for the current station
-	sts			suspence, temp1			;indicating when there is no need for any logic implementation 
-	sts			blink, temp1			;timer for 3Hz blink
-	sts			start_after_stop, temp1		;indicating the train is starting after stopping at a station 
-	sts			emergency_stop, temp1		;indicating emergency stop at a station 
-	sts			start_after_emergency, temp1	;indicating when the train is starting after emergency stop
-
-	ldi			temp1, 1
-	sts			start_flag, temp1		;will set the flag when we need to start moving
-	
-
-	jmp			halt
-
-
-; logic implementation for the train 
-halt:
-
-	ldi			temp1, (1 << TOIE2)		;start timer2
-	sts			TIMSK2, temp1
-
-	ser			temp1
-	out			DDRC, temp1
-	
-	
-; checks if we are in the last station 	
-one_loop:
-
-	lds			temp1, curr_num_parameters	
-	lds			temp2, n_stations
-	cp			temp1, temp2
-	breq			end_loop
-
-; checks if there is an emergency
-check_emeregency:
-
-	lds			temp1, emergency_stop
-	cpi			temp1, 1
-	breq			do_stop_emergency
-
-; checks if there is no need of any logic implementation 
-check_suspence:
-
-	lds			temp1, suspence
-	cpi			temp1, 1
-	breq			check_suspence
-
-; checks if the train has to start moving
-check_start:
-
-	lds			temp1, start_flag	; if we need to start moving
-	cpi			temp1, 1
-	breq			start_moving
-
-;checl if we are moving after we stopped in a station 
-check_start_after_stop:	
-
-	lds			temp1, start_after_stop
-	cpi			temp1, 1 
-	breq			start_moving_again
-
-
-
-; checks how long is left to the next station 
-check_second_left:				
-
-
-	lds			temp1, second_left
-	cpi			temp1, 3		;checks to display the name of the next station 
-	breq			do_show_next_station
-
-	lds			temp1, second_left
-	cpi			temp1, 0
-	breq			do_we_stop
-
-
-; infinite loop  
-rjmp	halt
-
-; does the logic part for showing the name of the next station 
-do_show_next_station: 
-
-	lds			temp1, curr_num_parameters	
-	lds			temp2, n_stations
-
-	inc			temp2
-	cp			temp1, temp2
-	breq			halt
-
-	rcall			display_next_station_name
-	rjmp			halt
-
-
-do_stop_emergency:		rjmp stop_emergency
-
-; will stop the emulator and reset the paramethers to loop 
-end_loop: 
-
-	rcall			lower_duty_cycle_function
-	ldi			temp1, ( 0<< TOIE2)
-	sts			TIMSK2, temp1
-
-
-	
-	rcall			last_stop
-
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-	rcall			switch_delay
-
-	clear_lcd_display
-	rjmp			logic_main
-	;rjmp end_loop
-
-; start the motor 
-start_moving:
-
-	 
-	rcall			increase_duty_cycle_function
-	rjmp			check_second_left
-
-
-; start moving after stopping at a station 
-start_moving_again:
-	
-
-	ldi			temp1, 0
-	sts			stop_flag, temp1
-	sts			wait_time, temp1
-	
-	rcall			increase_station
-	rcall			find_station_travel_time
-	
-	
-	rcall			increase_duty_cycle_function
-
-	ldi			temp1, 1
-	sts			middle_flag, temp1
-
-	ldi			temp1, 0
-	sts			start_after_stop, temp1
-	ldi			temp1, 1
-	sts			start_flag, temp1	
-
-	
-
-	rjmp			halt
-
-	
-; checks if we need to stop at the next station 
-do_we_stop:
-
-	
-
-	lds			temp1, stop_flag
-	cpi			temp1, 1
-	brne			new_station
-
-			;stop the motor
-	ldi			temp1, 0
-	sts			middle_flag, temp1				;empty the middle flag
-	sts			start_flag, temp1			;empty the start flag
-
-	rcall			lower_duty_cycle_function
-	rcall			find_stop_time
-
-	clear_lcd_display
-	rcall			increase_station
-	rcall			display_station_name
-
-	lds			temp1, n_stations
-	dec			temp1
-	sts			n_stations, temp1
-	
-	
-		
-
-	rjmp			halt
-	 				
-; sets the parametheres and will go to the next station 
-new_station:
-
-	rcall			increase_station
-	rcall			find_station_travel_time
-	clear_lcd_display
-
-	rcall			display_station_name
-	rjmp			halt
-
-; incrase the numeber of the stations we have visited	
-increase_station:
-
-	lds			temp1, n_stations
-	inc			temp1
-	sts			n_stations, temp1
-	ret
-
-; will stop the motor in case of emergency
-stop_emergency:
-
-	ldi			temp1, ( 0<< TOIE2)			;stop timer2
-	sts			TIMSK2, temp1
-
-	clear_lcd_display
-
-	ldi			temp1, 'E'
-	do_display_a_character	temp1
-	ldi			temp1, 'M'
-	do_display_a_character	temp1
-	ldi			temp1, 'E'
-	do_display_a_character	temp1
-	ldi			temp1, 'R'
-	do_display_a_character	temp1
-	ldi			temp1, 'G'
-	do_display_a_character	temp1
-	ldi			temp1, 'E'
-	do_display_a_character	temp1
-	ldi			temp1, 'N'
-	do_display_a_character	temp1
-	ldi			temp1, 'C'
-	do_display_a_character	temp1
-	ldi			temp1, 'Y'
-	do_display_a_character	temp1
-	
-
-	rcall			lower_duty_cycle_function
-
-;starts the motor after emergency	
-continue_after_emergency:
-
-	lds			temp1, start_after_emergency
-	cpi			temp1, 1 
-	brne			continue_after_emergency
-
-	ldi			temp1, 0
-	sts			stop_flag, temp1
-	sts			emergency_stop, temp1
-	sts			continue_after_emergency, temp1
-
-	clear_lcd_display
-	rcall			display_station_name
-	ldi			temp1, ( 1<< TOIE2)
-	sts			TIMSK2, temp1
-
-	
-	rjmp			halt
 
 ; find the travel time for the current station 
 
@@ -1153,153 +1679,6 @@ display_string_loop_end:
 	
 	pop					temp1
 	ret
-
-keypad_main:
-	
-	main_station_name:
-	clr			col
-	ldi			mask1, COLMASK_INIT					; mask = 0b11101111
-col_loop:
-	sts			PORTL, mask1
-	rcall			delay
-	lds			temp1, PINL						; read the state of current column
-	andi			temp1, ROWMASK						; temp1 &= 0b00001111
-	cpi			temp1, ROWMASK
-	breq			no_switch_pressed					; if temp1 &= 0b00001111 != ROW_MASK, goto no_switch_pressed
-											; else, a key is pressed, search for it 
-	clr			row							; row = 0
-	ldi			mask1, ROWMASK_INIT					; mask = 0b00000001
-
-				; mask = 0b00000001
-row_loop:
-	mov			temp2, temp1						; temp2 = the state of current column
-	and			temp2, mask1						
-	cpi			temp2, 0
-	brne			continue_scanning_row					; if temp2 & mask != 0, goto continue_scanning_row
-											; else we found the key pressed,
-
-	
-	/* ///////////////////////////////////////////////// WORKING ///////////////////////////////////////////////////////// */
-	lds			temp1, input_reading_stage
-
-	cpi			temp1, STATION_NAME_READING
-	brne			display_time_character					; if input_reading_stage != STATION_TIME_READING, goto display_time_character
-											; else, display_station_name_character
-display_station_name_character:
-	cli										; clear global interrupt bit
-	rcall			display_pressed_character_station_name			; display the pressed character onto LCD
-
-	in			temp1, TIFR0
-	cbr			temp1, 0x01
-	out			TIFR0, temp1						; clear the timer0 ovf interrupt flag (not having this is okay, since it only affects
-											; 1 counter increment in num_timer0_ovf)
-
-	sei										; NOTE: it is important to make sure display_pressed_character_station_name won't be interrupted
-											; by timer0 overflow
-	
-	rjmp			display_pressed_character_finished
-display_time_character:
-	rcall			display_pressed_digit_time			
-	rjmp			display_pressed_character_finished
-display_pressed_character_finished:
-	rcall			switch_delay						; delay for approx 0.124sec
-	cpi			return_val_l, ENTER_PRESSED
-	breq			main_station_name_end					; if the "ENTER" key is pressed, break out the current stage input reading and
-											; move on to reading the next sgae
-
-	cpi			return_val_l, BACKSPACE_PRESSED
-	breq			jump_back_to_main_station_name				; if the "BACKSPACE" key is pressed, continue scanning the next character
-
-	cpi			return_val_l, ASTERISK_PRESSED
-	breq			relative_branch_asterisk_resolve			; if the "ASTERISK" key is pressed, break out of the entire reading stage
-											; and move on to the next stage of simulating the railway
-	rjmp			relative_branch_asterisk_not_needed
-relative_branch_asterisk_resolve:
-	rjmp			input_reading_finish
-relative_branch_asterisk_not_needed:
-	lds			temp1, input_reading_stage
-	cpi			temp1, STATION_NAME_READING
-	breq			if_station_name_input_stage				; if input_reading_stage == STATION_NAME_READING , goto if_station_name_input_stage
-											; (which means reads the next character being input for the current station name)
-	; If we arrive at this point, result_val_l will contain the number 0-9 which we need to store onto curr_input_time
-	mov			temp1, return_val_l					; temp1 = return value of display_pressed_digit_time (between 0-9)
-	rcall			update_curr_input_time					; update the curr_input_time according to the current return_val_l value
-	rjmp			jump_back_to_main_station_name
-if_station_name_input_stage:
-	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
-	breq			jump_back_to_main_station_name				; if return_val_l == UNKNOWN_PRESSED_CHARACTER, goto jump_back_to_main_station_name
-
-	; TODO: check if name has exceeded 20 characters here (fixed)
-	mov			temp1, return_val_l					; return_val_l = last_typed_character
-	rcall			store_curr_character_station_name			; otherwise, it is a valid character, store it onto the current station name array
-
-	lds			temp1, curr_station_name_num_characters
-	inc			temp1
-	sts			curr_station_name_num_characters, temp1			; curr_station_name_num_characters++
-	
-jump_back_to_main_station_name:
-	rjmp			main_station_name					; continue scanning new pressed key
-
-continue_scanning_row:
-	inc			row							; row++
-	lsl			mask1							; mask1 << 1
-	rjmp			row_loop						; goto row_loop	
-	
-	
-no_switch_pressed:
-	rol			mask1							; update mask1
-	inc			col							; col++
-	ldi			temp3, 4						; temp3 = 4
-	cp			col, temp3
-	breq			relative_branch_resolve_main_station_name		; if col == 4, goto main
-	rjmp			relative_branch_resolve_main_station_name_not_needed
-relative_branch_resolve_main_station_name:
-	rjmp			main_station_name
-relative_branch_resolve_main_station_name_not_needed:
-	rjmp			col_loop						; else, goto col_loop
-main_station_name_end:
-	clear_lcd_display								; clear the display to read the next input
-	
-	lds			temp1, input_reading_stage
-	cpi			temp1, STATION_NAME_READING
-	breq			insert_null_terminator_station_name			; if input_reading_stage == NAME_STATION_READING, goto change_input_stage
-	rcall			store_curr_input_time					; otherwise, store curr_input_time to either travel/dwell array
-	rjmp			change_input_stage
-insert_null_terminator_station_name:
-	ldi			temp1, '\0'
-	rcall			store_curr_character_station_name			; insert '\0' to the index right after the last character in the current statio name array
-	sts			curr_station_name_num_characters, zero			; curr_station_name_num_characters = 0
-change_input_stage:
-	rcall			change_input_reading_stage				; call change_input_reading_stage to change input_reading_stage variable accordingly
-
-	lds			temp1, input_reading_stage
-	cpi			temp1, STATION_NAME_READING
-	brne			check_if_curr_input_time_need_reset			; if the new input_reading_stage != STATION_NAME_READING, goto check_if_curr_input_time_need_reset
-
-	lds			temp1, curr_num_parameters				; otherwise, curr_num_parameters++
-	inc			temp1
-	sts			curr_num_parameters, temp1
-
-check_if_curr_input_time_need_reset:
-	lds			temp1, input_reading_stage				
-	cpi			temp1, STATION_NAME_READING				
-	breq			update_timer0_state					; if the new input_reading_stage == STATION_NAME_READING, goto update_input_stage
-	sts			curr_input_time, zero					; otherwise, clear curr_input_time
-update_timer0_state:			
-	cli
-	set_timer0_according_to_input_stage						; macro that stops timer0 if input reading stage != STATION_NAME_READING, else it initialize it
-	sei										; NOTE: this macro shouldn't be interrupted by timer0 (since it is changing the state of it)
-	rjmp			main_station_name
-
-input_reading_finish:									; input reading finish at this point
-
-	clear_lcd_display
-	;rcall			display_all_arrays
-	
-	ldi temp1, (0 << TOIE0)
-	sts TIMSK0, temp1
-	rjmp logic_main
-
 
 display_pressed_digit_time:
 	push			temp1
@@ -1630,7 +2009,6 @@ update_curr_input_time:
 	push			temp1
 	push			temp2
 	push			temp3
-	; TODO: Check overflows happens
 	lds			temp2, curr_input_time					; temp2 = curr_input_time
 	ldi			temp3, 10						; temp3 = 10
 	mul			temp2, temp3						; r1:r0 = curr_input_time * 10
@@ -1708,6 +2086,7 @@ time_overflow_handler:
 	ret
 
 
+
 ; Interrupt handler for Timer0 overflow. This interrupt handler is mainly used by they keypad system to allow user to type multiple character
 ; from a single key (e.g. key "2" allows user to enter 'A','B' and 'C').
 Timer0OVF:
@@ -1752,7 +2131,27 @@ Timer0OVF_end:
 	pop			temp1
 	reti
 
+; A function that initialize the timer0. It have pre-scaler of 64.
+; Registers: temp1
+; Arguments: -
+; Returns: -
+timer0_initialization:
+	push			temp1
 	
+	sts			num_timer0_ovf, zero
+	sts			num_timer0_ovf + 1, zero				; num_timer0_ovf = 0
+
+	clr			temp1
+	out			TCCR0A, temp1						; NOTE: TCCRnA is the control register for Timern
+
+	ldi			temp1, 0b00000011																
+	out			TCCR0B, temp1						; pre-scaler value is 64 (the cycle for timer0 runs 64 slower)
+
+	lds			temp1, TIMSK0
+	ori			temp1, (1 << TOIE0)					; POSSIBLE PROBLEM
+	sts			TIMSK0, temp1						; enable Timer0 overflow interrupt
+	pop			temp1
+	ret		
 
 ; A function that stops timer0
 ; Registers: temp1
@@ -1766,11 +2165,12 @@ timer0_stop:
 	com			temp1
 	lds			temp2, TIMSK0
 	and			temp2, temp1						
-	sts			TIMSK0, temp2			
+	sts			TIMSK0, temp2		
 				
 	pop			temp2
 	pop			temp1
 	ret		
+
 
 ; A function that changes input_reading_stage variable from one stage to the next stage, showcased below.
 ; STATION_NAME_READING ->  TRAVEL_TIME_READING -> DWELL_TIME_READING -> STATION_NAME_READING -> ...
@@ -1818,6 +2218,50 @@ display_string_onto_lcd_loop_start:
 	rjmp					display_string_onto_lcd_loop_start
 display_string_onto_lcd_loop_end:
 	pop					temp1
+	ret
+
+	
+; A function that compares two string pointed by x and y register. This function assumes
+; x and y are pointing to a valid starting address of a string. Return 0 if matches, otherwise 1
+; Registers:
+; Arguments: x, y
+; Return: returl_val_h
+strcmp:
+	push				temp1
+	push				temp2
+	push				xl
+	push				xh
+	push				yl
+	push				yh
+
+	ldi				return_val_h, 0						; initially assumes the string matches
+strcmp_loop_start:
+	ld				temp1, x+
+	ld				temp2, y+
+
+	cpi				temp1, 0
+	breq				strcmp_loop_end
+	cpi				temp2, 0
+	breq				strcmp_loop_end						; if(x[i] == '\0'|| y[i] == '\0'), goto strcmp_loop_end
+
+	cp				temp1, temp2
+	breq				if_character_equal
+	ldi				return_val_h, 1						; return value = 1
+	rjmp				strcmp_end						; return
+if_character_equal:
+	rjmp				strcmp_loop_start
+strcmp_loop_end:
+	cp				temp1, temp2
+	breq				strcmp_end						; if temp1 == temp2, goto strcmp_end (since one of them is guaranteed
+												; to be '\0', if they are equal, they must be matching)
+	ldi				return_val_h, 1						; else, they don't match, set return value = 1
+strcmp_end:
+	pop				yh
+	pop				yl
+	pop				xh
+	pop				xl
+	pop				temp2
+	pop				temp1
 	ret
 
 ; A function that set temp as 0xFF and decrements it until 0
@@ -1892,8 +2336,8 @@ lcd_wait_loop:
 	nop
 	in		macro_r1, PINF						; read the data bits with BF from port F
 	lcd_ctrl_clr	LCD_E							; disable enable bit in lcd
-	sbrc	macro_r1, 7							; if busy flag is cleared (means not busy), skip next line
-	rjmp	lcd_wait_loop
+	sbrc		macro_r1, 7							; if busy flag is cleared (means not busy), skip next line
+	rjmp		lcd_wait_loop
 
 	lcd_ctrl_clr	LCD_RW							; set lcd into Instruction Register mode
 	ser		macro_r1
@@ -1920,6 +2364,8 @@ wait_5ms:
 ; Argument: -
 ; Return: -
 wait_1ms:
+	push		r23
+	push		r24
 	push		r25
 	push		temp1
 	push		temp2
@@ -1943,6 +2389,8 @@ wait_1ms_loop_finish:
 	pop			temp2
 	pop			temp1
 	pop			r25
+	pop			r24
+	pop			r23
 	ret
 
 ; A function that waste approximately 120ms. Is right after someone presses a switch on the key pad
