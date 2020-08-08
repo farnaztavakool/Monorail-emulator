@@ -475,7 +475,8 @@ rjmp keypad_main					; loop infinitely
 ;
 EXT_INT0:
 
-	;rcall switch_delay
+	rcall switch_delay
+
 	push temp1
 	in temp1, SREG
 	push temp1
@@ -485,15 +486,19 @@ EXT_INT0:
 	cpi temp1 ,1 
 	breq start_after_emergency_stop
 
+	lds temp1, stop_flag
+	cpi temp1, 0 
+	brne end_interrupt
+
 	ldi temp1, 1
 	sts	stop_flag, temp1
 	
 	
 	ser temp1
 	out DDRC, temp1
-
 	ldi temp1, 0b00001111
 	out PORTC, temp1
+
 	rjmp end_interrupt
 
 start_after_emergency_stop:
@@ -501,7 +506,14 @@ start_after_emergency_stop:
 	ldi temp1, 1 
 	sts start_after_emergency, temp1
 	
+	clr temp1
+	out PORTC, temp1
+
 end_interrupt:
+	
+	ldi temp1, 1
+	out EIFR, temp1
+
 	pop temp1
 	out SREG, temp1
 	pop temp1
@@ -527,13 +539,17 @@ EXT_INT1:
 		ser temp1
 		out DDRC, temp1
 
-		ldi temp1, 0b11110000
+		ldi temp1, 0b11111111
 		out PORTC, temp1
 		rjmp endinterrupt
 
 
 	
 endinterrupt:
+
+		ldi temp1, 1
+		out EIFR, temp1
+
 		pop temp1
 		out SREG, temp1
 		pop temp1
@@ -551,8 +567,7 @@ Time2OVF:
 	push			temp2
 	push			temp3
 
-	clr temp1
-	out PORTC, temp1
+	
 
 	lds temp1, wait_time			; check if we are waiting at a station 
 	cpi temp1, 0
@@ -582,6 +597,9 @@ do_end_second: rjmp end_second
 
 check_blink:
 
+	clr temp1
+	out PORTC, temp1
+
 	lds temp1, blink
 	inc temp1
 	sts blink, temp1
@@ -601,12 +619,12 @@ decrease_second_left:
 	lds	temp1, second_left
 	dec temp1
 	sts second_left, temp1
-	clear_lcd_display
+	;clear_lcd_display
 
 	lds temp3, n_stations
 
-	convert_digit_to_ascii temp1
-	do_display_a_character temp1
+	;convert_digit_to_ascii temp1
+	;do_display_a_character temp1
 
 	;onvert_digit_to_ascii temp3
 	;o_display_a_character temp3
@@ -672,7 +690,7 @@ lower_duty_cycle_function:
 	sts				OCR3BL, temp1
 
 	;ldi temp1, 0b10101010
-	out PORTC, temp1
+	;out PORTC, temp1
 	
 	
 
@@ -720,8 +738,8 @@ logic_main:
 	ldi temp1, 1
 	sts middle_flag, temp1
 	out DDRC, temp1
-	ser temp1
-	out PORTC, temp1	
+	;ser temp1
+	;out PORTC, temp1	
 			
 	ldi temp1, 0
 	sts n_stations, temp1
@@ -810,6 +828,9 @@ end_loop:
 	rcall lower_duty_cycle_function
 	ldi temp1, ( 0<< TOIE2)
 	sts TIMSK2, temp1
+
+	clear_lcd_display
+
 	rcall delay_three_half_seconds
 
 	clear_lcd_display
@@ -936,8 +957,8 @@ continue_after_emergency:
 	ldi temp1, ( 1<< TOIE2)
 	sts TIMSK2, temp1
 
-	ldi temp1, 0b1001010
-	out PORTC, temp1
+	;ldi temp1,0
+	;out PORTC, temp1
 	rjmp halt
 
 
