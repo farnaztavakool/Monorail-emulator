@@ -810,7 +810,11 @@ end_loop:
 	rcall lower_duty_cycle_function
 	ldi temp1, ( 0<< TOIE2)
 	sts TIMSK2, temp1
-	rjmp end_loop
+	rcall delay_three_half_seconds
+
+	clear_lcd_display
+	rjmp logic_main
+	;rjmp end_loop
 
 
 start_moving:
