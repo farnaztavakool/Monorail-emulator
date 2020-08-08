@@ -1,5 +1,4 @@
 
-
 ; the code is built on feddrick's code for task c
 
 ; set the prescaler for 1024 doesnt work correctly
@@ -612,7 +611,8 @@ logic_main:
 	ldi			temp1, 1
 	sts			start_flag, temp1		;will set the flag when we need to start moving
 	
-
+	clr			temp1
+	out			PORTC, temp1
 	jmp			halt
 
 
@@ -1014,7 +1014,7 @@ update_timer0_state:
 input_reading_finish:									; input reading finish at this point
 	clear_lcd_display
 	;rcall			display_all_arrays					; IF_DEBUG
-	call			delay_three_half_seconds				; allow timer0 to stabilize
+	;call			delay_three_half_seconds				; allow timer0 to stabilize
 	cli
 	call			timer0_stop						; stops timer0 overflow interrupt
 	sei	
