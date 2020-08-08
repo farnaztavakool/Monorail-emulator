@@ -1456,8 +1456,92 @@ Valid_input:
 
 
 
+; USART macros//////////////////////////////////////////////////////////////////
+
+.macro USART_Init
+	ldi		macro_r1, high(MYUBRR)
+	sts		UBRR0H, macro_r1
+	ldi		macro_r1, low(MYUBRR)
+	sts		UBRR0L, macro_r1							; set up the baud rate on the board
+
+	ldi		macro_r1, (1<< TXEN0| 1 <<RXEN0)
+	sts		UCSR0B, macro_r1							; enable transmitter and receiver
+
+	ldi		macro_r1, (1<< USBS0|3 <<UCSZ00)					; set frame structure. 8 data bit and 2 stop bit
+	sts		UCSR0C, macro_r1
+.endmacro
+
+.macro USART_Transmit
+	;Wait for empty transmit buffer
+USART_Transmit_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, UDRE0
+	rjmp		USART_Transmit_loop							; if USART0 data register is empty, put the data into the buffer
+
+	sts		UDR0, @0
+
+.endmacro
+
+.macro USART_Receive
+USART_Receiver_loop:
+	lds		macro_r1, UCSR0A
+	sbrs		macro_r1, RXC0
+	rjmp		USART_Receiver_loop							; if USART0 data register is empty, put the data into the buffer
+
+	lds		@0, UDR0
+.endmacro
+
+.macro check_valid_station
+; A function to check that correct character for station names
+; Only 'A - Z', 'a - z', ' ', or '\n' is valid
+check_station_name_character:
+	cpi		@0, 10		; Check against ASCII code for '\n'
+	breq		Valid_input
+	cpi		@0, 32		; Check against ASCII code for ' '
+	breq		Valid_input
+	cpi		@0, 65		; Anything else below 65 is not valid
+	brlo		Invalid_input
+	cpi		@0, 91		; Within 'A - Z' range
+	brlo		Valid_input
+	cpi		@0, 97		; Between 91 nad 97 is invalid
+	brlo		Invalid_input
+	cpi		@0, 123		; Within 'a - z' range
+	brlo		Valid_input
+
+Invalid_input:
+	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+
+Valid_input:
+	mov return_val_l, @0
+.endmacro
+
+.macro check_valid_time
+; A function to check valid character for time input
+; Only '0-9', '*', '
+check_time_input_character:
+	cpi		@0, 10		; Check for '\n'
+	breq		Valid_input
+	cpi		@0, 48		; Below 48 is not valid
+	brlo		Invalid_input
+	cpi		@0, 58		; Within '0 - 9'
+	brlo		Valid_input
+
+Invalid_input:
+	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+
+Valid_input:
+	mov return_val_l, @0
+.endmacro
+
+
+
+
+
+
+
+
 ; USART function///////////////////////////////////////////////////////////////////
-USART initiation:
+USART_initiation:
 	USART_Init
 	lds		temp1, input_reading_stage
 
@@ -1467,7 +1551,7 @@ check_input_parameter:
 	cpi		temp1, TRAVEL_TIME_READING
 	breq		reading_TRAVEL_TIME_input_start
 	cpi		temp1, DWELL_TIME_READING
-	breq		reading_DWELL_TIME_input_start
+	breq		reading_DWELL_TIME_input_start_longjump
 	cpi		temp1, FINISH_READING
 
 reading_STATION_NAME_input_start:
@@ -1482,7 +1566,7 @@ reading_STATION_NAME_input_loop:
 	cpi		return_val_l, '\n'
 	breq		reading_STATION_NAME_input_end
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
-	breq		handle_wrong_input
+	breq		handle_wrong_input_longjump
 	st		x+, temp2
 	lds		temp3, curr_station_name_num_characters
 	inc		temp3
@@ -1495,6 +1579,10 @@ reading_STATION_NAME_input_end:
 	st		x+, zero
 	rcall		store_station_name
 	rcall		change_input_reading_stage
+	rjmp		check_input_parameter
+
+reading_DWELL_TIME_input_start_longjump:
+	rjmp		reading_DWELL_TIME_input_start
 
 reading_TRAVEL_TIME_input_start:
 	set_z		travel_time_prompt
@@ -1503,17 +1591,21 @@ reading_TRAVEL_TIME_input_start:
 reading_TRAVEL_TIME_input_loop:
 	USART_Receive	temp2
 	check_valid_time temp2
-	cpi		return_value_l, '\n'
+	cpi		return_val_l, '\n'
 	breq		reading_TRAVEL_TIME_input_loop_end
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq		handle_wrong_input
 	sts		curr_input_time, temp2
 	call		update_curr_input_time
-	rjmp		reading_TRAVEL_TIME_input_loop_loop
+	rjmp		reading_TRAVEL_TIME_input_loop
 
 reading_TRAVEL_TIME_input_loop_end:
 	rcall		change_input_reading_stage
 	rcall		store_curr_input_time
+	rjmp		check_input_parameter
+
+handle_wrong_input_longjump:
+	rjmp		handle_wrong_input
 
 reading_DWELL_TIME_input_start:
 	set_z		dwell_time_prompt
@@ -1522,7 +1614,7 @@ reading_DWELL_TIME_input_start:
 reading_DWELL_TIME_input_loop:
 	USART_Receive	temp2
 	check_valid_time temp2
-	cpi		retrun_value_l, '\n'
+	cpi		return_val_l, '\n'
 	breq		reading_DWELL_TIME_input_end
 	cpi		return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq		handle_wrong_input
@@ -1533,10 +1625,10 @@ reading_DWELL_TIME_input_loop:
 reading_DWELL_TIME_input_end:
 	rcall		change_input_reading_stage
 	rcall		store_curr_input_time
-	rjmp		reading_STATION_NAME_input_start
+	rjmp		check_input_parameter
 
-handling_wrong_input:
-	set_y		wrong_input
+handle_wrong_input:
+	set_z		wrong_input
 	rcall		transmit_string
 	rjmp		check_input_parameter
 
@@ -1547,7 +1639,7 @@ transmit_string:
 transmit_string_loop:
 	lpm		temp1, z+
 	cpi		temp1, 0
-	breq		tranmsit_string_end
+	breq		transmit_string_loop_end
 	USART_Transmit	temp1
 	rjmp		transmit_string_loop
 
@@ -1566,7 +1658,7 @@ store_station_name:
 	push		yh
 
 	set_x		station_name_array
-	set_y		station_name
+	set_y		station_array
 	lds		temp1, curr_num_parameters
 	ldi		temp2, STATION_NAME_SIZE
 	mul		temp1, temp2
@@ -1580,9 +1672,9 @@ store_name_loop:
 	st		x+, temp3
 	cpi		temp3, 0
 	breq		store_name_end
-	rjmp		stroe_name_loop
+	rjmp		store_name_loop
 
-store_name_end
+store_name_end:
 	pop		yh
 	pop		yl
 	pop		xh
