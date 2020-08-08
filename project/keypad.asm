@@ -297,6 +297,7 @@ travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
 dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
 curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
 curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
+station_array:				.byte	21					; Temporary buffer to store input from USART, size 20
 
 .cseg	
 		
@@ -1339,35 +1340,6 @@ delay_three_half_seconds:
 	rcall			switch_delay							; delay approx 3.2s
 	ret
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
