@@ -51,6 +51,12 @@
 .equ			BAUD = 9600
 .equ			MYUBRR = (FOSC/16/BAUD-1)							; constants for the USART
 
+.equ			INVALID_STATION_NAME_STRING = 0x1
+.equ			VALID_STATION_NAME_STRING = 0x2
+
+.equ			INVALID_TIME_STRING = 0x3
+.equ			INVALID_TIME_STRING = 0x4
+
 .equ			waste_n = $FFFF									; constant for switch_delay
 
 .equ			one_second_num_interrupts = 977							; constant indicating how many time timer0 ovf 
@@ -343,12 +349,10 @@ USART_Receiver_loop:
 .endmacro
 
 ; A macro to check that correct character for station names is input
-; Only 'A - Z', 'a - z', ' ', or '\n' is valid
+; Only 'A - Z', 'a - z', ' ', is valid
 .macro check_valid_station
 
 check_station_name_character:
-	cpi		@0, '\n'								; Check against ASCII code for '\n'
-	breq		check_valid_station_valid_input
 	cpi		@0, ' '									; Check against ASCII code for ' '
 	breq		check_valid_station_valid_input
 	cpi		@0, 'A'									; Anything else below 65 is not valid
@@ -361,31 +365,29 @@ check_station_name_character:
 	brlt		check_valid_station_valid_input
 
 check_valid_station_invalid_input:
-	ldi		return_val_l, UNKNOWN_CHARACTER_PRESSED
+	ldi		@0, UNKNOWN_CHARACTER_PRESSED
 	rjmp		check_valid_station_end
 check_valid_station_valid_input:
-	mov		return_val_l, @0
+	; do nothing
 check_valid_station_end:
 .endmacro
 
 
 
 ; macro to check valid character for time input
-; Only '0-9', '\n'
+; Only '0-9'
 .macro check_valid_time
 check_time_input_character:
-	cpi		@0, '\n'								; Check for '\n'
-	breq		check_valid_time_valid_input
 	cpi		@0, '0'									; Below 48 is not valid
 	brlt		check_valid_time_invalid_input
 	cpi		@0, '9' + 1								; Within '0 - 9'
 	brlt		check_valid_time_valid_input
 
 check_valid_time_invalid_input:
-	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
+	ldi		@0, UNKNOWN_CHARACTER_PRESSED
 	rjmp		check_valid_time_end
 check_valid_time_valid_input:
-	mov		 return_val_l, @0
+	; do nothing
 check_valid_time_end:
 .endmacro
 
@@ -415,7 +417,9 @@ station_prompt_data:			.byte	15
 travel_time_prompt_data:		.byte	20
 dwell_time_prompt_data:			.byte	20
 wrong_input_data:			.byte	25
-finish_string_data:			.byte	7					; am array that will be containing the variable "finish"
+finish_string_data:			.byte	7					; an array that will be containing the variable "finish"
+curr_input_string:			.byte	21					; an array that will be containing the current input string from USART
+
 
 current_lcd_pointer_pos:		.byte	1					; a variable to keep track the current position of the lcd cursor
 
@@ -433,13 +437,10 @@ curr_input_time:			.byte	1					; a variable to store the time being input from t
 station_name_array:			.byte	21 * 21					; a 2d array that can store 21 string each of size 20 (excluding null terminator)
 											; Note: in manual, it only store 20 station name. The extra slot is by USART to input
 											; check. Refer to the function "USART_initiation" for more info
-station_buffer:				.byte	21					; A buffer to store USART input
 travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
 dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
-time_buffer:				.byte	5
 curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
 curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
-leftover_buffer:			.byte	20
 
 curr_station_index:			.byte	1					; a variable used to store the current station index
 
@@ -526,6 +527,7 @@ decide_input_platform_loop_start:
 	rjmp			decide_input_platform_loop_start			; go read PB0/PB1 until one of them is clicked
 
 if_keypad_case:
+	clear_lcd_display
 	rcall			read_input_through_keypad
 
 	rjmp			main_monorail
@@ -664,159 +666,171 @@ check_input_parameter:
 
 	cpi			temp1, DWELL_TIME_READING
 	breq			reading_DWELL_TIME_input_start_relative_branch_resolve		; if input_reading_stage == DWELL_TIME_READING, goto reading_DWELL_TIME_input_start
-	; The code won't reach here
+	; the code above will always branches
 
 reading_DWELL_TIME_input_start_relative_branch_resolve:
 	rjmp			reading_DWELL_TIME_input_start
 
 reading_STATION_NAME_input_start:
-	; initialise to write to station_array
 	set_y			station_prompt_data
-	rcall			transmit_string		
+	rcall			transmit_string							; prompt user to input station name
 	
-	set_x			station_buffer			
-
+	set_x			curr_input_string
+	clr			temp1								; temp1 = current received number of character
 reading_STATION_NAME_input_loop:
-	USART_Receive		temp2								; temp2 = new character from USART
+	cpi			temp1, 20
+	brge			reading_STATION_NAME_input_end					; if current received number of character >= 20, goto reading_STATION_NAME_input_end
+	USART_Receive		temp2
+	
+	cpi			temp2, '\n'
+	breq			reading_STATION_NAME_input_end					; if received character == '\n', goto reading_STATION_NAME_input_end
 
-	check_valid_station	temp2								; check if the new character is valid or not
-	cpi			return_val_l, '\n'				
-	breq			reading_STATION_NAME_input_end					; if the new character == '\n', goto reading_STATION_NAME_input_end
-	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
-	breq			handling_wrong_input_branch_resolve1				
+	st			x+, temp2
+	inc			temp1								; current received number of character++
+	rjmp			reading_STATION_NAME_input_loop
+
+reading_STATION_NAME_input_end:
+	st			x+, zero							; store null terminator to indicate curr_input_string ends
+
+	set_y			curr_input_string
+	rcall			check_input_name_station_string					; this function either returns INVALID_STATION_NAME_STRING or VALID_STATION_NAME_STRING
+	cpi			return_val_l, INVALID_STATION_NAME_STRING
+	breq			handling_wrong_input_branch_resolve1
 	rjmp			handling_wrong_input_branch_resolve1_not_needed
 handling_wrong_input_branch_resolve1:
 	rjmp			handling_wrong_input
 handling_wrong_input_branch_resolve1_not_needed:
-	st			x+, temp2
-	rjmp			reading_STATION_NAME_input_loop
+	
+	set_x			finish_string_data
+	set_y			curr_input_string
+	strcmp											; strcmp(finish_string_data, curr_input_string). Note: returns 0 if same, 1 otherwise
 
-reading_STATION_NAME_input_end:
-	st			x+, zero
-	set_x			station_buffer	
-
-	set_y			finish_string_data
-	call			strcmp								; compare the newly input string with "finish" string
-	cpi			return_val_h, 0
-	breq			USART_initiation_end_branch_resolve1				; if newly input string == "finish", goto USART_initiation_end
-	rcall			store_buffer_start
-	set_y			station_buffer
-	rcall			transmit_string
+	cpi			return_val_h, 0							; if strcmp(curr_input_string, finish_string_data) == 0, goto USART_initiation_end
+	breq			USART_initiation_end_branch_resolve1
 	rjmp			USART_initiation_end_branch_resolve1_not_needed
 USART_initiation_end_branch_resolve1:
 	rjmp			USART_initiation_end
 USART_initiation_end_branch_resolve1_not_needed:
-	; TODO: check if "finish" is entered		
+	lds			temp1, curr_num_parameters
+	ldi			temp2, STATION_NAME_SIZE
+	mul			temp1, temp2							; r1:r0 = curr_num_parameters *  STATION_NAME_SIZE
+	
+	set_x			station_name_array
+	
+	add			xl, r0
+	adc			xh, r1								; x = &station_name_array[curr_num_parameters]	
+
+	set_y			curr_input_string						; y =  &curr_input_string[curr_num_parameters]
+
+	call			strcpy								; strcpy(station_name_array[curr_num_parameters], curr_input_string)
 	call			change_input_reading_stage
+	
+	set_y			curr_input_string
+	rcall			transmit_string							; display the input string back to the USART so user can see that their input has been logged
+
 	rjmp			check_input_parameter
 
 reading_TRAVEL_TIME_input_start:
 	; initialise to write to travel_array
 	set_y			travel_time_prompt_data
-	rcall			transmit_string
+	rcall			transmit_string							; prompt user to enter travel time
 
-	sts			curr_input_time, zero						; curr_input_time =  0
-	set_x			time_buffer
+	set_x			curr_input_string						; x = &curr_input_string[curr_num_parameters]
+
+	clr			temp1								; temp1 = number of character that has been received
 reading_TRAVEL_TIME_input_loop:
+	cpi			temp1, 20
+	brsh			reading_TRAVEL_TIME_input_loop_end
+												; if current received number of character >= 20, goto reading_STATION_NAME_input_end	
 	USART_Receive		temp2
-	check_valid_time	temp2
-	cpi			return_val_l, '\n'
-	breq			reading_TRAVEL_TIME_input_loop_end
-	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
-	breq			handling_wrong_input_branch_resolve2			
-	rjmp			handling_wrong_input_branch_resolve2_not_needed
-handling_wrong_input_branch_resolve2:
-	rjmp			handling_wrong_input
-handling_wrong_input_branch_resolve2_not_needed:
+	cpi			temp2, '\n'
+	breq			reading_TRAVEL_TIME_input_loop_end				; if received character == '\n', goto reading_STATION_NAME_input_end
+
 	st			x+, temp2
-	lds			temp1, curr_input_time
-	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
-	ldi			temp3, 10
-
-	mul			temp1, temp3
-	mov			temp1, r0
-	; TODO; check overflow
-	add			temp1, temp2
-	sts			curr_input_time, temp1						; curr_input_time = curr_input_time * 10 + new digit
+	inc			temp1
 	rjmp			reading_TRAVEL_TIME_input_loop
-
 reading_TRAVEL_TIME_input_loop_end:
-	st			x+, zero
-	set_y			time_buffer
-	rcall			transmit_string
+	ldi			temp1, '\0'
+	st			x+, temp1							; insert null terminator to indicate the end of the string
+
+	set_y			curr_input_string
+	rcall			check_time_string						; this function checks that every character in curr_input_string is valid character for time
+
+	cpi			return_val_l, INVALID_TIME_STRING
+	breq			handling_wrong_input						; if curr_input_string is not a valid time string, goto handling_wrong_input
+
+	set_y			curr_input_string
+	call			atoi								; change the string in curr_input_string to be a number, returned in retur_val_l
+
+	set_y			travel_time_array
 	lds			temp1, curr_num_parameters
-	set_x			travel_time_array
+	add			yl, temp1
+	adc			yh, zero							; y = &travel_time_array[curr_num_parameters]
 
-	add			xl, temp1
-	adc			xh, zero							; x = &travel_time_array[curr_num_parameters]
+	st			y, return_val_l							; travel_time_array[curr_num_parameters] = atoi(curr_input_string)
 
-	lds			temp1, curr_input_time
-	st			x, temp1							; travel_time_array[curr_num_parameters] = curr_input_time
+	
+	set_y			curr_input_string
+	rcall			transmit_string							; display the input string back to the USART so user can see that their input has been logged
+
 	call			change_input_reading_stage
 	rjmp			check_input_parameter
 
 reading_DWELL_TIME_input_start:
-	; initialise to write to dwell_array
+
 	set_y			dwell_time_prompt_data
-	rcall			transmit_string
+	rcall			transmit_string							; prompt user to enter dwell time
+			
+	set_x			curr_input_string						; x = &curr_input_string[0]
 
-	sts			curr_input_time, zero						; curr_input_time =  0
-	set_x			time_buffer
-
+	clr			temp1								; temp1 = current received number of character
 reading_DWELL_TIME_input_loop:
+	cpi			temp1, 20
+	brsh			reading_DWELL_TIME_input_end					; if current received number of character >= 20, goto reading_DWELL_TIME_input_end
+
 	USART_Receive		temp2
-	check_valid_time	temp2
-	cpi			return_val_l, '\n'
+	cpi			temp2, '\n'
+	breq			reading_DWELL_TIME_input_end					; if current received character == '\n', goto reading_DWELL_TIME_input_end
 
-	breq			reading_DWELL_TIME_input_end
-	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
-	breq			handling_wrong_input
-	st			x+, temp2
-	lds			temp1, curr_input_time
-	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
-	ldi			temp3, 10
-
-	mul			temp1, temp3
-	mov			temp1, r0
-	; TODO; check overflow
-	add			temp1, temp2
-	sts			curr_input_time, temp1						; curr_input_time = curr_input_time * 10 + new digit
-
-	rjmp			reading_DWELL_TIME_input_loop
+	st			x+, temp2							; otherwise, store the new received character onto curr_input_string[]
+	inc			temp1
+	rjmp			reading_DWELL_TIME_input_loop					
 
 reading_DWELL_TIME_input_end:
-	st			x+, zero
-	set_y			time_buffer
-	rcall			transmit_string
-	lds			temp1, curr_num_parameters	
-	set_x			dwell_time_array
+	ldi			temp1, '\0'
+	st			x+, temp1							; insert null terminator to indicate the end of the string
 
-	add			xl, temp1
-	adc			xh, zero
+	set_y			curr_input_string
+	rcall			check_time_string						; this function returns through return_val_l either INVALID_TIME_STRING and VALID_TIME_STRING
 
-	lds			temp1, curr_input_time
-	st			x, temp1							; travel_time_array[curr_num_parameters] = curr_input_time
-	call			change_input_reading_stage
+	cpi			return_val_l, INVALID_TIME_STRING
+	breq			handling_wrong_input						; if curr_input_string is not a valid time string, goto handling_wrong_input
+
+	set_y			curr_input_string
+	rcall			atoi								; change curr_input_string onto a number
 
 	lds			temp1, curr_num_parameters
+
+	set_x			dwell_time_array
+	add			xl, temp1
+	adc			xh, zero							; x = &dwell_time_array[curr_num_parameters]
+
+	st			x, return_val_l							; dwell_time_array[curr_num_parameters] = atoi(curr_input_string)
+	
 	inc			temp1
-	sts			curr_num_parameters, temp1
+	sts			curr_num_parameters, temp1					; curr_num_parameters++ (do this since we will go back to STATION_NAME_READING stage)
+
+	set_y			curr_input_string
+	rcall			transmit_string							; display the input string back to the USART so user can see that their input has been logged
+
+	call			change_input_reading_stage
+
 	rjmp			reading_STATION_NAME_input_start
 
 handling_wrong_input:
 	set_y			wrong_input_data
 	rcall			transmit_string
-wrong_input_loop:
-	USART_Receive		temp2
-	set_x			leftover_buffer
-	st			x+, temp2
-	cpi			temp2, '\n'
-	breq			handle_wrong_input_check_input_parameter_longjump
-	rjmp			wrong_input_loop
-
-handle_wrong_input_check_input_parameter_longjump:
 	rjmp			check_input_parameter
-
 USART_initiation_end:
 	ret
 
@@ -837,43 +851,96 @@ transmit_string_loop_end:
 	pop			temp1
 	ret
 
-; A function to transmit data from station_buffer into station_name_array
-store_buffer_start:
-	push		temp1
-	push		temp2
-	push		temp3
-	push		xl
-	push		xh
-	push		yl
-	push		yh
+; A function that checks whether the array pointed by y is a valid station name
+; Arguments: y
+; Registers: temp1, temp2
+; Returns: return_val_l (INVALID_STATION_NAME_STRING or VALID_STATION_NAME_STRING)
+check_input_name_station_string:
+	push			temp1
+	push			yl
+	push			yh
+	ldi			return_val_l, VALID_STATION_NAME_STRING				; initially assumes the station name string is valid
+check_input_name_station_string_loop_start:
+	ld			temp1, y+
+	cpi			temp1, '\0'
+	breq			check_input_name_station_string_loop_end			; if y[i] == '\0', goto check_input_name_station_string_loop_end
 
-	set_x		station_name_array
-	set_y		station_buffer
-	lds		temp1, curr_num_parameters
-	ldi		temp2, STATION_NAME_SIZE
-	mul		temp1, temp2
-	mov		temp1, r0
-	mov		temp2, r1
-	add		xl, temp1
-	adc		xh, temp2
+	check_valid_station	temp1								; macro store UNKNOWN_CHARACTER_PRESSED onto temp1 if invalid character has been input
+	cpi			temp1, UNKOWN_CHARACTER_PRESSED
+	breq			if_station_name_string_invalid					; if an invalid character pressed, goto if_station_name_string_invalid
 
-store_buffer_loop:
-	ld		temp3, y+
-	st		x+, temp3
-	cpi		temp3, 0
-	breq		store_buffer_end
-	rjmp		store_buffer_loop
+	rjmp			check_input_name_station_string_loop_start
 
-store_buffer_end:
-	pop		yh
-	pop		yl
-	pop		xh
-	pop		xl
-	pop		temp3
-	pop		temp2
-	pop		temp1
+if_station_name_string_invalid:
+	ldi			return_val_l, INVALID_STATION_NAME_STRING
+check_input_name_station_string_loop_end:
+
+	pop			yh
+	pop			yl
+	pop			temp1
 	ret
 
+
+; A function that checks whether the array pointed by y is a valid time. Note: a valid time should not be > 255
+; Arguments: y
+; Registers: temp1
+; Returns: return_val_l (INVALID_TIME_STRING or VALID_TIME_STRING)
+check_time_string:
+	push			temp1
+	push			yl
+	push			yh
+	ldi			return_val_l, VALID_TIME_STRING				; initially assumes the station name string is valid
+check_input_time_string_loop_start:
+	ld			temp1, y+
+	cpi			temp1, '\0'
+	breq			check_input_name_station_string_loop_end			; if y[i] == '\0', goto check_input_name_station_string_loop_end
+
+	check_valid_time	temp1								; macro store UNKNOWN_CHARACTER_PRESSED onto temp1 if invalid character has been input
+	cpi			temp1, UNKOWN_CHARACTER_PRESSED
+	breq			if_station_name_string_invalid					; if an invalid character pressed, goto if_station_name_string_invalid
+
+	rjmp			check_input_name_station_string_loop_start
+
+if_time_string_invalid:
+	ldi			return_val_l, INVALID_STATION_NAME_STRING
+check_input_time_string_loop_end:
+
+	pop			yh
+	pop			yl
+	pop			temp1
+	ret
+; A function that change the array pointed by y into a number and then returns the number through return_val_l. Note: this function assumes that y is pointing
+; to a valid one byte number string
+; Arguments: y
+; Registers: temp1, temp2
+; Returns: return_val_l
+atoi:
+	push			temp1
+	push			temp2
+	push			yl
+	push			yh
+	clr			return_val_l
+atoi_loop_start:
+	ld			temp1, y+
+	cpi			temp1, '\0'
+	breq			atoi_loop_end							; if y[i] == '\0', goto atoi_loop_end
+
+	convert_ascii_to_digit	temp1
+	ldi			temp2, 10
+	mul			return_val_l, temp2
+
+	mov			return_val_l, r0
+	add			return_val_l, temp1
+	rjmp			atoi_loop_start
+
+atoi_loop_end:
+	pop			yh
+	pop			yl
+	pop			temp2
+	pop			temp1
+	ret
+
+	
 ; A function that reads all the inputs for the monorail from the keypad
 ; Note: this function don't save any register (treat is as another main function).
 read_input_through_keypad:
@@ -2263,6 +2330,37 @@ display_string_onto_lcd_loop_end:
 	pop					temp1
 	ret
 
+; A function that copies the data from array pointed by y to array pointer by x. This function assumes
+; x and y are pointing to a valid starting address of a string and x would contain enough space to store the string
+; from y. 
+; Registers:
+; Arguments: x, y
+; Return: -
+strcmp:
+	push			temp1
+	push			temp2
+	push			xl
+	push			xh
+	push			yl
+	push			yh
+strcpy_loop_start:
+	ld			temp2, y+
+	cpi			temp2, '\0'
+	breq			strcpy_loop_end								; if y[i] == '\0', goto strcpy_loop_end
+	st			x+, temp2
+	rjmp			strcpy_loop_start
+strcpy_loop_end:
+	ldi			temp1, '\0'
+	st			x, temp1
+strcpy_end:
+	pop			yh
+	pop			yl
+	pop			xh
+	pop			xl
+	pop			temp2
+	pop			temp1
+	ret
+
 ; A function that compares two string pointed by x and y register. This function assumes
 ; x and y are pointing to a valid starting address of a string. Return 0 if matches, otherwise 1
 ; Registers:
@@ -2603,4 +2701,5 @@ delay_three_half_seconds:
 	rcall			switch_delay							; delay approx 3.2s
 	ret
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
