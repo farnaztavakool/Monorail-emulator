@@ -433,8 +433,10 @@ curr_input_time:			.byte	1					; a variable to store the time being input from t
 station_name_array:			.byte	21 * 21					; a 2d array that can store 21 string each of size 20 (excluding null terminator)
 											; Note: in manual, it only store 20 station name. The extra slot is by USART to input
 											; check. Refer to the function "USART_initiation" for more info
+station_buffer:				.byte	21					; A buffer to store USART input
 travel_time_array:			.byte	20					; an array of 20 bytes containing travel times
 dwell_time_array:			.byte	20					; an array of 20 bytes containing dwell time
+time_buffer:				.byte	5
 curr_num_parameters:			.byte	1					; a variable to keep track how many parameters we currently have 
 curr_station_name_num_characters:	.byte	1					; a variable to contain the current number of character of the station  name being input
 
@@ -671,14 +673,7 @@ reading_STATION_NAME_input_start:
 	set_y			station_prompt_data
 	rcall			transmit_string		
 	
-	lds			temp1, curr_num_parameters
-	ldi			temp2, STATION_NAME_SIZE
-	mul			temp1, temp2
-	
-	set_x			station_name_array
-	
-	add			xl, r0
-	adc			xh, r1								; x = &station_name_array[curr_num_parameters]				
+	set_x			station_buffer			
 
 reading_STATION_NAME_input_loop:
 	USART_Receive		temp2								; temp2 = new character from USART
@@ -696,20 +691,15 @@ handling_wrong_input_branch_resolve1_not_needed:
 
 reading_STATION_NAME_input_end:
 	st			x+, zero
-
-	lds			temp1, curr_num_parameters
-	ldi			temp2, STATION_NAME_SIZE
-	mul			temp1, temp2
-	
-	set_x			station_name_array
-	
-	add			xl, r0
-	adc			xh, r1								; x = &station_name_array[curr_num_parameters]	
+	set_x			station_buffer	
 
 	set_y			finish_string_data
 	call			strcmp								; compare the newly input string with "finish" string
 	cpi			return_val_h, 0
 	breq			USART_initiation_end_branch_resolve1				; if newly input string == "finish", goto USART_initiation_end
+	rcall			store_buffer_start
+	set_y			station_buffer
+	rcall			transmit_string
 	rjmp			USART_initiation_end_branch_resolve1_not_needed
 USART_initiation_end_branch_resolve1:
 	rjmp			USART_initiation_end
@@ -724,6 +714,7 @@ reading_TRAVEL_TIME_input_start:
 	rcall			transmit_string
 
 	sts			curr_input_time, zero						; curr_input_time =  0
+	set_x			time_buffer
 reading_TRAVEL_TIME_input_loop:
 	USART_Receive		temp2
 	check_valid_time	temp2
@@ -735,7 +726,7 @@ reading_TRAVEL_TIME_input_loop:
 handling_wrong_input_branch_resolve2:
 	rjmp			handling_wrong_input
 handling_wrong_input_branch_resolve2_not_needed:
-
+	st			x+, temp2
 	lds			temp1, curr_input_time
 	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
 	ldi			temp3, 10
@@ -748,6 +739,9 @@ handling_wrong_input_branch_resolve2_not_needed:
 	rjmp			reading_TRAVEL_TIME_input_loop
 
 reading_TRAVEL_TIME_input_loop_end:
+	st			x+, zero
+	set_y			time_buffer
+	rcall			transmit_string
 	lds			temp1, curr_num_parameters
 	set_x			travel_time_array
 
@@ -765,6 +759,7 @@ reading_DWELL_TIME_input_start:
 	rcall			transmit_string
 
 	sts			curr_input_time, zero						; curr_input_time =  0
+	set_x			time_buffer
 
 reading_DWELL_TIME_input_loop:
 	USART_Receive		temp2
@@ -774,7 +769,7 @@ reading_DWELL_TIME_input_loop:
 	breq			reading_DWELL_TIME_input_end
 	cpi			return_val_l, UNKNOWN_CHARACTER_PRESSED
 	breq			handling_wrong_input
-
+	st			x+, temp2
 	lds			temp1, curr_input_time
 	convert_ascii_to_digit	temp2								; convert the new ascii into a digit
 	ldi			temp3, 10
@@ -788,7 +783,10 @@ reading_DWELL_TIME_input_loop:
 	rjmp			reading_DWELL_TIME_input_loop
 
 reading_DWELL_TIME_input_end:
-	lds			temp1, curr_num_parameters
+	st			x+, zero
+	set_y			time_buffer
+	rcall			transmit_string
+	lds			temp1, curr_num_parameters	
 	set_x			dwell_time_array
 
 	add			xl, temp1
@@ -827,6 +825,42 @@ transmit_string_loop_end:
 	pop			temp1
 	ret
 
+; A function to transmit data from station_buffer into station_name_array
+store_buffer_start:
+	push		temp1
+	push		temp2
+	push		temp3
+	push		xl
+	push		xh
+	push		yl
+	push		yh
+
+	set_x		station_name_array
+	set_y		station_buffer
+	lds		temp1, curr_num_parameters
+	ldi		temp2, STATION_NAME_SIZE
+	mul		temp1, temp2
+	mov		temp1, r0
+	mov		temp2, r1
+	add		xl, temp1
+	adc		xh, temp2
+
+store_buffer_loop:
+	ld		temp3, y+
+	st		x+, temp3
+	cpi		temp3, 0
+	breq		store_buffer_end
+	rjmp		store_buffer_loop
+
+store_buffer_end:
+	pop		yh
+	pop		yl
+	pop		xh
+	pop		xl
+	pop		temp3
+	pop		temp2
+	pop		temp1
+	ret
 
 ; A function that reads all the inputs for the monorail from the keypad
 ; Note: this function don't save any register (treat is as another main function).
