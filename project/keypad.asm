@@ -47,6 +47,10 @@
 
 .equ			one_second_num_interrupts = 977							; constant indicating how many time timer0 ovf 
 													; should occur before 1s has passed
+													
+.equ			FOSC = 16000000
+.equ			BAUD = 9600
+.equ			MYUBRR = (FOSC/16/BAUD-1)
 
 .def			zero = r2
 .def			temp1 = r16
@@ -354,6 +358,13 @@ keypad_initialization:
 	rcall			timer0_initialization					; turn on timer0 with pre-scaler of 64
 
 	sei										; enable global interrupt (mainly for timer0OVF currently)
+	
+prompt_string_initialisation:
+station_prompt:			.db	'E','n','t','e','r',' ','s','t','a','t','i','o','n','\0'
+travel_time_prompt:		.db	'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e','\0'
+dwell_time_prompt:		.db	'E','n','t','e','r',' ','d','w','e','l','l',' ','t','i','m','e',':','\0'
+wrong_input:			.db	'I','n','v','a','l','i','d',' ','i','n','p','u','t',' ','f','o','u','n','d','\0'
+
 main_station_name:
 	clr			col
 	ldi			mask1, COLMASK_INIT					; mask = 0b11101111
@@ -1360,102 +1371,6 @@ delay_three_half_seconds:
 
 
 
-.dseg 
-station_array:			.byte 21			; Temporary buffer to store input from USART
-								; Store 20 characters and null terminator
-
-.cseg
-station_prompt:			.db	'E','n','t','e','r',' ','s','t','a','t','i','o','n',':','\0'
-travel_time_prompt:		.db	'E','n','t','e','r',' ','t','r','a','v','e','l',' ','t','i','m','e',':','\0'
-dwell_time_prompt:		.db	'E','n','t','e','r',' ','d','w','e','l','l',' ','t','i','m','e',':','\0'
-wrong_input:			.db	'I','n','v','a','l','i','d',' ','i','n','p','u','t',' ','d','e','t','e','c','t','e','d','\0'
-
-
-
-; USART macros//////////////////////////////////////////////////////////////////
-
-.macro USART_Init
-	ldi		macro_r1, high(MYUBRR)
-	sts		UBRR0H, macro_r1
-	ldi		macro_r1, low(MYUBRR)
-	sts		UBRR0L, macro_r1							; set up the baud rate on the board
-
-	ldi		macro_r1, (1<< TXEN0| 1 <<RXEN0)
-	sts		UCSR0B, macro_r1							; enable transmitter and receiver
-
-	ldi		macro_r1, (1<< USBS0|3 <<UCSZ00)					; set frame structure. 8 data bit and 2 stop bit
-	sts		UCSR0C, macro_r1
-.endmacro
-
-.macro USART_Transmit
-	;Wait for empty transmit buffer
-USART_Transmit_loop:
-	lds		macro_r1, UCSR0A
-	sbrs		macro_r1, UDRE0
-	rjmp		USART_Transmit_loop							; if USART0 data register is empty, put the data into the buffer
-
-	sts		UDR0, @0
-
-.endmacro
-
-.macro USART_Receive
-USART_Receiver_loop:
-	lds		macro_r1, UCSR0A
-	sbrs		macro_r1, RXC0
-	rjmp		USART_Receiver_loop							; if USART0 data register is empty, put the data into the buffer
-
-	lds		@0, UDR0
-.endmacro
-
-.macro check_valid_station
-; A function to check that correct character for station names
-; Only 'A - Z', 'a - z', ' ', or '\n' is valid
-check_station_name_character:
-	cpi		@0, 10		; Check against ASCII code for '\n'
-	breq		Valid_input
-	cpi		@0, 32		; Check against ASCII code for ' '
-	breq		Valid_input
-	cpi		@0, 65		; Anything else below 65 is not valid
-	brlo		Invalid_input
-	cpi		@0, 91		; Within 'A - Z' range
-	brlo		Valid_input
-	cpi		@0, 97		; Between 91 nad 97 is invalid
-	brlo		Invalid_input
-	cpi		@0, 123		; Within 'a - z' range
-	brlo		Valid_input
-
-Invalid_input:
-	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
-
-Valid_input:
-	ldi return_val_l, @0
-.endmacro
-
-.macro check_valid_time
-; A function to check valid character for time input
-; Only '0-9', '*', '
-check_time_input_character:
-	cpi		@0, 10		; Check for '\n'
-	breq		Valid_input
-	cpi		@0, 48		; Below 48 is not valid
-	brlo		Invalid_input
-	cpi		@0, 58		; Within '0 - 9'
-	brlo		Valid_input
-
-Invalid_input:
-	ldi return_val_l, UNKNOWN_CHARACTER_PRESSED
-
-Valid_input:
-	ldi return_val_l, @0
-.endmacro
-
-
-
-
-
-
-
-
 ; USART macros//////////////////////////////////////////////////////////////////
 
 .macro USART_Init
@@ -1558,7 +1473,7 @@ reading_STATION_NAME_input_start:
 	set_x		station_array
 	set_z		station_prompt
 	rcall		transmit_string
-	sts		curr_station_name_num_characters, 0
+	sts		curr_station_name_num_characters, zero
 
 reading_STATION_NAME_input_loop:
 	USART_Receive	temp2
